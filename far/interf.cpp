@@ -671,6 +671,79 @@ void ShowTime()
 	}
 }
 
+void ShowGreeting()
+{
+	if (!Global->Opt->Greeting)
+		return;
+
+	Global->CurrentTime.update();
+
+	if (const auto CurrentWindow = Global->WindowManager->GetCurrentWindow())
+	{
+		if (CurrentWindow->GetType() == windowtype_viewer
+			|| CurrentWindow->GetType() == windowtype_editor
+			|| !Global->CtrlObject->Cp()->LeftPanel()->IsVisible())
+		{
+			return;
+		}
+
+		auto clock = Global->CurrentTime.get_time();
+		std::wstring msg; // We will always use wide characters for this custom build
+
+		if (clock.tm_hour >= 5 && clock.tm_hour < 12)
+		{
+			msg = L"Good morning, ";
+		}
+		else if (clock.tm_hour >= 12 && clock.tm_hour < 17)
+		{
+			msg = L"Good afternoon, ";
+		}
+		else if(clock.tm_hour > 17 && clock.tm_hour < 20)
+		{
+			msg = L"Good evening, ";
+		}
+		else
+		{
+			msg = L"Good night, ";
+		}
+
+		if (Global->Opt->strGreetingName.empty())
+		{
+			std::wstring username;
+
+			if (os::GetUserNameW(username))
+			{
+				msg += username;
+			}
+			else
+			{
+				msg += L"master";
+			}
+		}
+		else
+		{
+			msg += Global->Opt->strGreetingName;
+		}
+
+		msg += L"~";
+
+		auto CurrentGreetingPos = (int)(ScrY - 1 - Global->Opt->ShowKeyBar - Global->Opt->LeftHeightDecrement);
+		int x = 1;
+
+		if (msg.size() < Global->LastShownGreetingSize)
+		{
+			matrix<FAR_CHAR_INFO> Char(1, 1);
+			Global->ScrBuf->Read({ x, CurrentGreetingPos - 1, x, CurrentGreetingPos - 1 }, Char);
+			Global->ScrBuf->FillRect({ x, CurrentGreetingPos, CurrentGreetingPos + static_cast<int>(Global->LastShownGreetingSize), CurrentGreetingPos }, Char[0][0]);
+		}
+
+		GotoXY(x, static_cast<int>(CurrentGreetingPos));
+		SetColor(COL_CLOCK);
+		Text(msg);
+		Global->LastShownGreetingSize = msg.size();
+	}
+}
+
 void GotoXY(int X,int Y)
 {
 	CurX=X;

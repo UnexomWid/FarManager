@@ -325,6 +325,7 @@ void Options::InterfaceSettings()
 	DialogBuilder Builder(lng::MConfigInterfaceTitle, L"InterfSettings"sv);
 
 	Builder.AddCheckbox(lng::MConfigClock, Clock);
+	Builder.AddCheckbox(lng::MConfigGreeting, Greeting);
 	Builder.AddCheckbox(lng::MConfigMouse, Mouse);
 	Builder.AddCheckbox(lng::MConfigKeyBar, ShowKeyBar);
 	Builder.AddCheckbox(lng::MConfigMenuBar, ShowMenuBar);
@@ -361,6 +362,8 @@ void Options::InterfaceSettings()
 	Builder.LinkFlags(SetIconCheck, SetAdminIconCheck, DIF_DISABLE);
 	Builder.AddText(lng::MConfigTitleAddons);
 	Builder.AddEditField(strTitleAddons, 47);
+	Builder.AddText(lng::MConfigGreetingName);
+	Builder.AddEditField(strGreetingName, 47);
 	Builder.AddOKCancel();
 
 	if (Builder.ShowDialog())
@@ -1900,6 +1903,7 @@ void Options::InitConfigsData()
 		{FSSF_INTERFACE,         NKeyInterface,              L"ShowMenuBar"sv,                   ShowMenuBar, false},
 		{FSSF_PRIVATE,           NKeyInterface,              L"RedrawTimeout"sv,                 RedrawTimeout, 200},
 		{FSSF_PRIVATE,           NKeyInterface,              L"TitleAddons"sv,                   strTitleAddons, L"%Ver %Platform %Admin"sv},
+		{FSSF_PRIVATE,           NKeyInterface,              L"GreetingName"sv,                  strGreetingName, L""sv },
 		{FSSF_PRIVATE,           NKeyInterface,              L"ViewerTitleFormat"sv,             strViewerTitleFormat, L"%Lng %File"sv},
 		{FSSF_PRIVATE,           NKeyInterfaceCompletion,    L"Append"sv,                        AutoComplete.AppendCompletion, false},
 		{FSSF_PRIVATE,           NKeyInterfaceCompletion,    L"ModalList"sv,                     AutoComplete.ModalList, false},
@@ -1992,7 +1996,8 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyPluginConfirmations,    L"SetFindList"sv,                   PluginConfirm.SetFindList, false},
 		{FSSF_PRIVATE,           NKeyPluginConfirmations,    L"StandardAssociation"sv,           PluginConfirm.StandardAssociation, false},
 		{FSSF_PRIVATE,           NKeyPolicies,               L"ShowHiddenDrives"sv,              Policies.ShowHiddenDrives, true},
-		{FSSF_PRIVATE,           NKeyScreen,                 L"Clock"sv,                         Clock, true},
+		{FSSF_PRIVATE,           NKeyScreen,                 L"Clock"sv,                         Clock, false},
+		{FSSF_PRIVATE,           NKeyScreen,                 L"Greeting"sv,                      Greeting, true },
 		{FSSF_PRIVATE,           NKeyScreen,                 L"DeltaX"sv,                        ScrSize.DeltaX, 0},
 		{FSSF_PRIVATE,           NKeyScreen,                 L"DeltaY"sv,                        ScrSize.DeltaY, 0},
 		{FSSF_SCREEN,            NKeyScreen,                 L"KeyBar"sv,                        ShowKeyBar, true},

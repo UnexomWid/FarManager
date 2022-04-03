@@ -101,7 +101,7 @@ static string& far_title()
 static string bake_title(string_view const NewTitle)
 {
 	if (user_title().empty())
-		return concat(NewTitle, L" - Far "sv, expand_title_variables(Global->Opt->strTitleAddons));
+		return concat(NewTitle, L" - FarUW "sv, expand_title_variables(Global->Opt->strTitleAddons));
 
 	auto CustomizedTitle = expand_title_variables(user_title());
 	replace_icase(CustomizedTitle, L"%Default"sv, NewTitle);

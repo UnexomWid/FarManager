@@ -450,6 +450,7 @@ void ScreenBuf::Flush(flush_type FlushType)
 	if (FlushType & flush_type::screen)
 	{
 		ShowTime();
+		ShowGreeting();
 
 		if (!Global->SuppressIndicators)
 		{

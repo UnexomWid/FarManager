@@ -89,17 +89,20 @@ public:
 		NONCOPYABLE(far_clock);
 		far_clock();
 		const string& get() const;
+		const tm& get_time() const;
 		size_t size() const;
 		void update(bool Force = false);
 
 	private:
 		string m_CurrentTime;
 		unsigned long long m_LastValue{};
+		tm m_Time;
 	};
 
 	far_clock CurrentTime;
 
 	size_t LastShownTimeSize{};
+	size_t LastShownGreetingSize{};
 	string_view HelpFileMask{L"*.hlf"sv};
 	bool OnlyEditorViewerUsed{}; // -e or -v
 #ifdef DIRECT_RT

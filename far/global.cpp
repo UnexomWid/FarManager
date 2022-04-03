@@ -92,6 +92,11 @@ const string& global::far_clock::get() const
 	return m_CurrentTime;
 }
 
+const tm& global::far_clock::get_time() const
+{
+	return m_Time;
+}
+
 size_t global::far_clock::size() const
 {
 	return m_CurrentTime.size();
@@ -107,4 +112,7 @@ void global::far_clock::update(bool const Force)
 
 	m_CurrentTime = os::chrono::format_time(Now);
 	m_LastValue = Value;
+
+	auto time = os::chrono::nt_clock::to_time_t(Now);
+	m_Time = *localtime(&time);
 }

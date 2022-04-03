@@ -133,6 +133,7 @@ enum BOX_DEF_SYMBOLS
 };
 
 void ShowTime();
+void ShowGreeting();
 
 void InitConsole();
 void CloseConsole();

@@ -2717,6 +2717,20 @@ MConfigClock
 "Гадзіннік"
 "&Laikrodis"
 
+MConfigGreeting
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+"&Greeting"
+
 MConfigMouse
 "Мы&шь"
 "M&ouse"
@@ -2926,6 +2940,20 @@ upd:"Far window title addons:"
 "Додаткова інформація для заголовка вікна:"
 "Дадатковая даведка для на&звы акна:"
 upd:"Far &window title addons:"
+
+MConfigGreetingName
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
+"Greeting &name (empty=username):"
 
 MConfigDlgSetsTitle
 l:

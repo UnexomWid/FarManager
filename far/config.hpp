@@ -810,6 +810,7 @@ public:
 
 	palette Palette;
 	BoolOption Clock;
+	BoolOption Greeting;
 	BoolOption Mouse;
 	BoolOption ShowKeyBar;
 	BoolOption ScreenSaver;
@@ -1016,6 +1017,7 @@ public:
 	// отключена, либо будут разрешенны только избранные и системные (OEM ANSI) кодовые страницы.
 
 	StringOption strTitleAddons;
+	StringOption strGreetingName;
 	StringOption strEditorTitleFormat;
 	StringOption strViewerTitleFormat;
 
