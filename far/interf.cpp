@@ -692,13 +692,13 @@ void ShowGreeting()
 
 		if (clock.tm_hour >= 5 && clock.tm_hour < 12)
 		{
-			msg = L"Good morning, ";
+			msg = L"Good morning, "; // Localization isn't worth it because I'm the only one who will use this build
 		}
 		else if (clock.tm_hour >= 12 && clock.tm_hour < 17)
 		{
 			msg = L"Good afternoon, ";
 		}
-		else if(clock.tm_hour > 17 && clock.tm_hour < 20)
+		else if(clock.tm_hour >= 17 && clock.tm_hour < 20)
 		{
 			msg = L"Good evening, ";
 		}
