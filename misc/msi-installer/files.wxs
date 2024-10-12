@@ -13,17 +13,20 @@
       <Component Id="Far.exe.example.ini" Guid="$(var.Guid.Far.exe.example.ini)" Win64="$(var.Win64)">
         <File Id="Far.exe.example.ini" KeyPath="yes" Source="$(var.SourceDir)\Far.exe.example.ini" />
       </Component>
+      <Component Id="sqlite3.dll" Guid="$(var.Guid.sqlite3.dll)" Win64="$(var.Win64)">
+        <File Id="sqlite3.dll" KeyPath="yes" Source="$(var.SourceDir)\sqlite3.dll" />
+      </Component>
       <Component Id="luafar3.dll" Guid="$(var.Guid.luafar3.dll)" Win64="$(var.Win64)">
         <File Id="luafar3.dll" KeyPath="yes" Source="$(var.SourceDir)\luafar3.dll" />
       </Component>
       <Component Id="lua51.dll" Guid="$(var.Guid.lua51.dll)" Win64="$(var.Win64)">
         <File Id="lua51.dll" KeyPath="yes" Source="$(var.SourceDir)\lua51.dll" />
       </Component>
-      <Component Id="lpeg.dll" Guid="$(var.Guid.lpeg.dll)" Win64="$(var.Win64)">
-        <File Id="lpeg.dll" KeyPath="yes" Source="$(var.SourceDir)\lpeg.dll" />
-      </Component>
       <Component Id="Far.map" Guid="$(var.Guid.Far.map)" Win64="$(var.Win64)">
         <File Id="Far.map" KeyPath="yes" Source="$(var.SourceDir)\Far.map" />
+      </Component>
+      <Component Id="sqlite3.map" Guid="$(var.Guid.sqlite3.map)" Win64="$(var.Win64)">
+        <File Id="sqlite3.map" KeyPath="yes" Source="$(var.SourceDir)\sqlite3.map" />
       </Component>
       <Component Id="luafar3.map" Guid="$(var.Guid.luafar3.map)" Win64="$(var.Win64)">
         <File Id="luafar3.map" KeyPath="yes" Source="$(var.SourceDir)\luafar3.map" />
@@ -97,6 +100,17 @@
       <Component Id="SaveOldPluginSettings.cmd" Guid="$(var.Guid.SaveOldPluginSettings.cmd)" Win64="$(var.Win64)">
         <File Id="SaveOldPluginSettings.cmd" KeyPath="yes" Source="$(var.SourceDir)\SaveOldPluginSettings.cmd" />
       </Component>
+      <Component Id="Far.VisualElementsManifest.xml" Guid="$(var.Guid.Far.VisualElementsManifest.xml)" Win64="$(var.Win64)">
+        <File Id="Far.VisualElementsManifest.xml" KeyPath="yes" Source="$(var.SourceDir)\Far.VisualElementsManifest.xml" />
+      </Component>
+      <Directory Id="VisualElements" Name="VisualElements">
+        <Component Id="VisualElements.large.png" Guid="$(var.Guid.VisualElements.large.png)" Win64="$(var.Win64)">
+          <File Id="VisualElements.large.png" KeyPath="yes" Source="$(var.SourceDir)\VisualElements\large.png" />
+        </Component>
+        <Component Id="VisualElements.small.png" Guid="$(var.Guid.VisualElements.small.png)" Win64="$(var.Win64)">
+          <File Id="VisualElements.small.png" KeyPath="yes" Source="$(var.SourceDir)\VisualElements\small.png" />
+        </Component>
+      </Directory>
       <Directory Id="Addons" Name="Addons">
         <Component Id="Descript.ion_1" Guid="$(var.Guid.Descript.ion_1)" Win64="$(var.Win64)">
           <File Id="Descript.ion_1" KeyPath="yes" Source="$(var.SourceDir)\Addons\Descript.ion" />
@@ -197,6 +211,9 @@
             </Component>
           </Directory>
           <Directory Id="No_Highlighting" Name="Interface">
+            <Component Id="black_and_white.farconfig_2" Guid="$(var.Guid.black_and_white.farconfig_2)" Win64="$(var.Win64)">
+              <File Id="black_and_white.farconfig_2" KeyPath="yes" Source="$(var.SourceDir)\Addons\Colors\Interface\black_and_white.farconfig" />
+            </Component>
             <Component Id="black_from_Fonarev.farconfig_2" Guid="$(var.Guid.black_from_Fonarev.farconfig_2)" Win64="$(var.Win64)">
               <File Id="black_from_Fonarev.farconfig_2" KeyPath="yes" Source="$(var.SourceDir)\Addons\Colors\Interface\black_from_Fonarev.farconfig" />
             </Component>
@@ -278,6 +295,9 @@
           <Component Id="Edit.SaveFile.lua" Guid="$(var.Guid.Edit.SaveFile.lua)" Win64="$(var.Win64)">
             <File Id="Edit.SaveFile.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\Edit.SaveFile.lua" />
           </Component>
+          <Component Id="Edit.SelectionStartEnd.lua" Guid="$(var.Guid.Edit.SelectionStartEnd.lua)" Win64="$(var.Win64)">
+            <File Id="Edit.SelectionStartEnd.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\Edit.SelectionStartEnd.lua" />
+          </Component>
           <Component Id="F3.lua" Guid="$(var.Guid.F3.lua)" Win64="$(var.Win64)">
             <File Id="F3.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\F3.lua" />
           </Component>
@@ -353,6 +373,9 @@
           <Component Id="ShiftTab.lua" Guid="$(var.Guid.ShiftTab.lua)" Win64="$(var.Win64)">
             <File Id="ShiftTab.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\ShiftTab.lua" />
           </Component>
+          <Component Id="SwapHorizontalScrollDirection.lua" Guid="$(var.Guid.SwapHorizontalScrollDirection.lua)" Win64="$(var.Win64)">
+            <File Id="SwapHorizontalScrollDirection.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\SwapHorizontalScrollDirection.lua" />
+          </Component>
           <Component Id="Symlink.lua" Guid="$(var.Guid.Symlink.lua)" Win64="$(var.Win64)">
             <File Id="Symlink.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\Symlink.lua" />
           </Component>
@@ -374,6 +397,9 @@
           <Component Id="View.Space.lua" Guid="$(var.Guid.View.Space.lua)" Win64="$(var.Win64)">
             <File Id="View.Space.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\View.Space.lua" />
           </Component>
+          <Component Id="View.TypeToSearch.lua" Guid="$(var.Guid.View.TypeToSearch.lua)" Win64="$(var.Win64)">
+            <File Id="View.TypeToSearch.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\View.TypeToSearch.lua" />
+          </Component>
           <Component Id="WheelScreenSwitch.lua" Guid="$(var.Guid.WheelScreenSwitch.lua)" Win64="$(var.Win64)">
             <File Id="WheelScreenSwitch.lua" KeyPath="yes" Source="$(var.SourceDir)\Addons\Macros\WheelScreenSwitch.lua" />
           </Component>
@@ -393,9 +419,6 @@
           </Component>
           <Component Id="Executor.CMD.farconfig" Guid="$(var.Guid.Executor.CMD.farconfig)" Win64="$(var.Win64)">
             <File Id="Executor.CMD.farconfig" KeyPath="yes" Source="$(var.SourceDir)\Addons\SetUp\Executor.CMD.farconfig" />
-          </Component>
-          <Component Id="Executor.COMMAND.farconfig" Guid="$(var.Guid.Executor.COMMAND.farconfig)" Win64="$(var.Win64)">
-            <File Id="Executor.COMMAND.farconfig" KeyPath="yes" Source="$(var.SourceDir)\Addons\SetUp\Executor.COMMAND.farconfig" />
           </Component>
           <Component Id="WindowsGUI.farconfig" Guid="$(var.Guid.WindowsGUI.farconfig)" Win64="$(var.Win64)">
             <File Id="WindowsGUI.farconfig" KeyPath="yes" Source="$(var.SourceDir)\Addons\SetUp\WindowsGUI.farconfig" />
@@ -473,6 +496,23 @@
             <File Id="TechInfo.txt_1" KeyPath="yes" Source="$(var.SourceDir)\Documentation\rus\TechInfo.txt" />
           </Component>
         </Directory>
+        <Directory Id="pol" Name="pol">
+          <Component Id="Bug.Report.txt_2" Guid="$(var.Guid.Bug.Report.txt_2)" Win64="$(var.Win64)">
+            <File Id="Bug.Report.txt_2" KeyPath="yes" Source="$(var.SourceDir)\Documentation\pol\Bug.Report.txt" />
+          </Component>
+          <Component Id="Far.FAQ.txt_2" Guid="$(var.Guid.Far.FAQ.txt_2)" Win64="$(var.Win64)">
+            <File Id="Far.FAQ.txt_2" KeyPath="yes" Source="$(var.SourceDir)\Documentation\pol\Far.FAQ.txt" />
+          </Component>
+          <Component Id="Plugins.Install.txt_2" Guid="$(var.Guid.Plugins.Install.txt_2)" Win64="$(var.Win64)">
+            <File Id="Plugins.Install.txt_2" KeyPath="yes" Source="$(var.SourceDir)\Documentation\pol\Plugins.Install.txt" />
+          </Component>
+          <Component Id="Plugins.Review.txt_2" Guid="$(var.Guid.Plugins.Review.txt_2)" Win64="$(var.Win64)">
+            <File Id="Plugins.Review.txt_2" KeyPath="yes" Source="$(var.SourceDir)\Documentation\pol\Plugins.Review.txt" />
+          </Component>
+          <Component Id="TechInfo.txt_2" Guid="$(var.Guid.TechInfo.txt_2)" Win64="$(var.Win64)">
+            <File Id="TechInfo.txt_2" KeyPath="yes" Source="$(var.SourceDir)\Documentation\pol\TechInfo.txt" />
+          </Component>
+        </Directory>
       </Directory>
       <Directory Id="Encyclopedia" Name="Encyclopedia">
         <Component Id="FarEncyclopedia.ru.chm" Guid="$(var.Guid.FarEncyclopedia.ru.chm)" Win64="$(var.Win64)">
@@ -486,6 +526,9 @@
         </Component>
         <Component Id="macroapi_manual.en.chm" Guid="$(var.Guid.macroapi_manual.en.chm)" Win64="$(var.Win64)">
           <File Id="macroapi_manual.en.chm" KeyPath="yes" Source="$(var.SourceDir)\Encyclopedia\macroapi_manual.en.chm" />
+        </Component>
+        <Component Id="macroapi_manual.pl.chm" Guid="$(var.Guid.macroapi_manual.pl.chm)" Win64="$(var.Win64)">
+          <File Id="macroapi_manual.pl.chm" KeyPath="yes" Source="$(var.SourceDir)\Encyclopedia\macroapi_manual.pl.chm" />
         </Component>
       </Directory>
       <Directory Id="Plugins" Name="Plugins">
@@ -1020,6 +1063,12 @@
             <Component Id="colorerr.lng" Guid="$(var.Guid.colorerr.lng)" Win64="$(var.Win64)">
               <File Id="colorerr.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\FarColorer\bin\colorerr.lng" />
             </Component>
+            <Component Id="colorerpol.hlf" Guid="$(var.Guid.colorerpol.hlf)" Win64="$(var.Win64)">
+              <File Id="colorerpol.hlf" KeyPath="yes" Source="$(var.SourceDir)\Plugins\FarColorer\bin\colorerpol.hlf" />
+            </Component>
+            <Component Id="colorerpol.lng" Guid="$(var.Guid.colorerpol.lng)" Win64="$(var.Win64)">
+              <File Id="colorerpol.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\FarColorer\bin\colorerpol.lng" />
+            </Component>
             <Component Id="colorer.map" Guid="$(var.Guid.colorer.map)" Win64="$(var.Win64)">
               <File Id="colorer.map" KeyPath="yes" Source="$(var.SourceDir)\Plugins\FarColorer\bin\colorer.map" />
             </Component>
@@ -1246,11 +1295,20 @@
           <Component Id="NetBox.dll" Guid="$(var.Guid.NetBox.dll)" Win64="$(var.Win64)">
             <File Id="NetBox.dll" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBox.dll" />
           </Component>
+          <Component Id="NetBox.map" Guid="$(var.Guid.NetBox.map)" Win64="$(var.Win64)">
+            <File Id="NetBox.map" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBox.map" />
+          </Component>
           <Component Id="NetBoxEng.lng" Guid="$(var.Guid.NetBoxEng.lng)" Win64="$(var.Win64)">
             <File Id="NetBoxEng.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBoxEng.lng" />
           </Component>
           <Component Id="NetBoxRus.lng" Guid="$(var.Guid.NetBoxRus.lng)" Win64="$(var.Win64)">
             <File Id="NetBoxRus.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBoxRus.lng" />
+          </Component>
+          <Component Id="NetBoxPol.lng" Guid="$(var.Guid.NetBoxPol.lng)" Win64="$(var.Win64)">
+            <File Id="NetBoxPol.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBoxPol.lng" />
+          </Component>
+          <Component Id="NetBoxSpa.lng" Guid="$(var.Guid.NetBoxSpa.lng)" Win64="$(var.Win64)">
+            <File Id="NetBoxSpa.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\NetBoxSpa.lng" />
           </Component>
           <Component Id="README.md" Guid="$(var.Guid.README.md)" Win64="$(var.Win64)">
             <File Id="README.md" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\README.md" />
@@ -1258,8 +1316,14 @@
           <Component Id="README.RU.md" Guid="$(var.Guid.README.RU.md)" Win64="$(var.Win64)">
             <File Id="README.RU.md" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\README.RU.md" />
           </Component>
+          <Component Id="README.PL.md" Guid="$(var.Guid.README.PL.md)" Win64="$(var.Win64)">
+            <File Id="README.PL.md" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\README.PL.md" />
+          </Component>
           <Component Id="LICENSE.txt" Guid="$(var.Guid.LICENSE.txt)" Win64="$(var.Win64)">
             <File Id="LICENSE.txt" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\LICENSE.txt" />
+          </Component>
+          <Component Id="cacert.pem" Guid="$(var.Guid.cacert.pem)" Win64="$(var.Win64)">
+            <File Id="cacert.pem" KeyPath="yes" Source="$(var.SourceDir)\Plugins\NetBox\cacert.pem" />
           </Component>
         </Directory>
         <Directory Id="HlfViewer" Name="HlfViewer">
@@ -1536,6 +1600,9 @@
           <Component Id="ProcLit.lng" Guid="$(var.Guid.ProcLit.lng)" Win64="$(var.Win64)">
             <File Id="ProcLit.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\ProcList\ProcLit.lng" />
           </Component>
+          <Component Id="ProcSpa.lng" Guid="$(var.Guid.ProcSpa.lng)" Win64="$(var.Win64)">
+            <File Id="ProcSpa.lng" KeyPath="yes" Source="$(var.SourceDir)\Plugins\ProcList\ProcSpa.lng" />
+          </Component>
         </Directory>
         <Directory Id="TmpPanel" Name="TmpPanel">
           <Component Id="changelog_17" Guid="$(var.Guid.changelog_17)" Win64="$(var.Win64)">
@@ -1570,6 +1637,9 @@
           </Component>
           <Component Id="shortcuts.rus.temp" Guid="$(var.Guid.shortcuts.rus.temp)" Win64="$(var.Win64)">
             <File Id="shortcuts.rus.temp" KeyPath="yes" Source="$(var.SourceDir)\Plugins\TmpPanel\shortcuts.rus.temp" />
+          </Component>
+          <Component Id="shortcuts.pol.temp" Guid="$(var.Guid.shortcuts.pol.temp)" Win64="$(var.Win64)">
+            <File Id="shortcuts.pol.temp" KeyPath="yes" Source="$(var.SourceDir)\Plugins\TmpPanel\shortcuts.pol.temp" />
           </Component>
           <Component Id="shortcuts.bel.temp" Guid="$(var.Guid.shortcuts.bel.temp)" Win64="$(var.Win64)">
             <File Id="shortcuts.bel.temp" KeyPath="yes" Source="$(var.SourceDir)\Plugins\TmpPanel\shortcuts.bel.temp" />

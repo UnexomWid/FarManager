@@ -67,15 +67,14 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "lang.hpp"
 #include "manager.hpp"
 #include "copy_progress.hpp"
-#include "string_utils.hpp"
 #include "cvtname.hpp"
-#include "exception.hpp"
 #include "exception_handler.hpp"
 #include "global.hpp"
 #include "dizlist.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.env.hpp"
 #include "platform.fs.hpp"
 
@@ -116,8 +115,6 @@ class ShellCopy : noncopyable
 public:
 	ShellCopy(panel_ptr SrcPanel, bool Move, bool Link, bool CurrentOnly, bool Ask, int& ToPlugin, string* PluginDestPath, bool ToSubdir);
 
-	DWORD CopyProgressRoutine(unsigned long long TotalFileSize, unsigned long long TotalBytesTransferred, unsigned long long StreamSize, unsigned long long StreamBytesTransferred, DWORD StreamNumber, DWORD CallbackReason, HANDLE hSourceFile, HANDLE hDestinationFile);
-
 	enum class security
 	{
 		do_nothing,
@@ -127,10 +124,10 @@ public:
 
 private:
 	// called by ShellCopy
-	void copy_selected_items(string_view Dest);
+	void copy_selected_items(string_view Dest, std::optional<error_state_ex>& ErrorState);
 
 	// called by copy_selected_items 4 times
-	COPY_CODES ShellCopyOneFile(string_view Src, const os::fs::find_data& SrcData, string& strDest, int KeepPathPos, bool Rename);
+	COPY_CODES ShellCopyOneFile(string_view Src, const os::fs::find_data& SrcData, string& strDest, int KeepPathPos, bool Rename, std::optional<error_state_ex>& ErrorState);
 
 	void CheckStreams(string_view Src, string_view DestPath);
 
@@ -241,8 +238,7 @@ enum COPY_FLAGS
 	FCOPY_UPDATEPPANEL            = 12_bit, // необходимо обновить пассивную панель
 };
 
-template<typename times_type>
-static bool set_file_time(const os::fs::file& File, const times_type& Times, bool const All)
+static bool set_file_time(const os::fs::file& File, const auto& Times, bool const All)
 {
 	const auto opt_time = [&](const os::chrono::time_point& Time)
 	{
@@ -266,18 +262,15 @@ static const struct
 }
 SecurityMove
 {
-	// These static_casts are redundant and only to suppress a spurious warning C4838 in VS2017.
-	// See https://github.com/FarGroup/FarManager/issues/166
-	// TODO: remove once we drop support for VS2017.
-	static_cast<int>(0_bit),
-	static_cast<int>(0_bit | 1_bit),
-	static_cast<int>(2_bit),
+	0_bit,
+	0_bit | 1_bit,
+	2_bit,
 },
 SecurityCopy
 {
-	static_cast<int>(3_bit),
-	static_cast<int>(3_bit | 4_bit),
-	static_cast<int>(5_bit),
+	3_bit,
+	3_bit | 4_bit,
+	5_bit,
 };
 
 static bool ZoomedState, IconicState;
@@ -359,7 +352,7 @@ static bool CheckNulOrCon(string_view Src)
 	if (HasPathPrefix(Src))
 		Src.remove_prefix(4);
 
-	return (starts_with_icase(Src, L"nul"sv) || starts_with_icase(Src, L"con"sv)) && (Src.size() == 3 || (Src.size() > 3 && path::is_separator(Src[3])));
+	return (starts_with_icase(Src, L"nul"sv) || starts_with_icase(Src, L"con"sv)) && (Src.size() == 3 || (Src.size() > 3 && path::get_is_separator(Src)(Src[3])));
 }
 
 static string GenerateName(string_view const Name, string_view const Path)
@@ -421,7 +414,7 @@ intptr_t ShellCopy::CopyDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 		{
 			if (Param1==ID_SC_USEFILTER) // "Use filter"
 			{
-				m_UseFilter = static_cast<FARCHECKEDSTATE>(reinterpret_cast<intptr_t>(Param2)) == BSTATE_CHECKED;
+				m_UseFilter = static_cast<FARCHECKEDSTATE>(std::bit_cast<intptr_t>(Param2)) == BSTATE_CHECKED;
 				return TRUE;
 			}
 
@@ -481,7 +474,7 @@ intptr_t ShellCopy::CopyDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 		case DN_LISTHOTKEY:
 			if(Param1==ID_SC_COMBO)
 			{
-				const auto Index = reinterpret_cast<intptr_t>(Param2);
+				const auto Index = std::bit_cast<intptr_t>(Param2);
 				if (Index == CM_ASKRO)
 				{
 					Dlg->SendMessage(DM_SWITCHRO, 0, nullptr);
@@ -493,10 +486,10 @@ intptr_t ShellCopy::CopyDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 			break;
 		case DN_INPUT:
 			{
-				const auto ir = static_cast<const INPUT_RECORD*>(Param2);
-				if (ir->EventType == MOUSE_EVENT && Dlg->SendMessage(DM_GETDROPDOWNOPENED, ID_SC_COMBO, nullptr))
+				const auto& ir = *static_cast<INPUT_RECORD const*>(Param2);
+				if (ir.EventType == MOUSE_EVENT && Dlg->SendMessage(DM_GETDROPDOWNOPENED, ID_SC_COMBO, nullptr))
 				{
-					if (Dlg->SendMessage(DM_LISTGETCURPOS, ID_SC_COMBO, nullptr) == CM_ASKRO && ir->Event.MouseEvent.dwButtonState && !(ir->Event.MouseEvent.dwEventFlags & MOUSE_MOVED))
+					if (Dlg->SendMessage(DM_LISTGETCURPOS, ID_SC_COMBO, nullptr) == CM_ASKRO && ir.Event.MouseEvent.dwButtonState && IsMouseButtonEvent(ir.Event.MouseEvent.dwEventFlags))
 					{
 						Dlg->SendMessage(DM_SWITCHRO, 0, nullptr);
 						return FALSE;
@@ -519,7 +512,7 @@ intptr_t ShellCopy::CopyDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 			     в списке.
 			*/
 			const auto MultiCopy = Dlg->SendMessage(DM_GETCHECK, ID_SC_MULTITARGET, nullptr) == BSTATE_CHECKED;
-			string strOldFolder = view_as<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, ID_SC_TARGETEDIT, nullptr));
+			string strOldFolder = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, ID_SC_TARGETEDIT, nullptr));
 			string strNewFolder;
 
 			if (AltF10 == 2)
@@ -638,8 +631,12 @@ ShellCopy::ShellCopy(
 		SingleSelectedFileSize = Data.FileSize;
 	}
 
-	ZoomedState = IsZoomed(console.GetWindow()) != FALSE;
-	IconicState = IsIconic(console.GetWindow()) != FALSE;
+	{
+		const auto hWnd = console.GetWindow();
+		ZoomedState = IsZoomed(hWnd) != FALSE;
+		IconicState = IsIconic(hWnd) != FALSE;
+	}
+
 	bool ShowTotalCopySize = Global->Opt->CMOpt.CopyShowTotal;
 	auto DestPlugin = ToPlugin;
 	ToPlugin = 0;
@@ -762,14 +759,14 @@ ShellCopy::ShellCopy(
 			}
 		}
 
-		const auto Format = msg(Move? lng::MMoveFile : Link? lng::MLinkFile : lng::MCopyFile);
+		const auto& Format = msg(Move? lng::MMoveFile : Link? lng::MLinkFile : lng::MCopyFile);
 		const auto& ToOrIn = msg(Link? lng::MCMLTargetIN : lng::MCMLTargetTO);
 		const auto SpaceAvailable = std::max(0, static_cast<int>(CopyDlg[ID_SC_TITLE].X2 - CopyDlg[ID_SC_TITLE].X1 - 1 - 1));
-		if (const auto MaxLength = std::max(0, SpaceAvailable - static_cast<int>(HiStrlen(format(Format, L""sv, ToOrIn)))))
+		if (const auto MaxLength = std::max(0, SpaceAvailable - static_cast<int>(HiStrlen(far::vformat(Format, L""sv, ToOrIn)))))
 		{
-			strCopyStr = truncate_right(SingleSelName, MaxLength);
+			strCopyStr = escape_ampersands(truncate_right(SingleSelName, MaxLength));
 		}
-		strCopyStr = format(Format, strCopyStr, ToOrIn);
+		strCopyStr = far::vformat(Format, strCopyStr, ToOrIn);
 
 		// Если копируем одиночный файл, то запрещаем использовать фильтр
 		if (!(SingleSelAttributes & FILE_ATTRIBUTE_DIRECTORY))
@@ -791,7 +788,7 @@ ShellCopy::ShellCopy(
 		else if (StrItems[LenItems-1] == '1')
 			NItems = lng::MCMLItems0;
 
-		strCopyStr = format(msg(Move? lng::MMoveFiles : Link? lng::MLinkFiles : lng::MCopyFiles),
+		strCopyStr = far::vformat(msg(Move? lng::MMoveFiles : Link? lng::MLinkFiles : lng::MCopyFiles),
 			SelCount,
 			msg(NItems),
 			msg(Link? lng::MCMLTargetIN : lng::MCMLTargetTO));
@@ -902,13 +899,13 @@ ShellCopy::ShellCopy(
 		CopyDlg[ID_SC_SECURITY_INHERIT].Flags |= DIF_HIDDEN | DIF_DISABLE;
 		CopyDlg[ID_SC_SEPARATOR2].Flags       |= DIF_HIDDEN;
 
-		for (const auto& i: irange(ID_SC_SEPARATOR2, ID_SC_COMBO + 1))
+		for (const auto i: std::views::iota(ID_SC_SEPARATOR2 + 0, ID_SC_COMBO + 1))
 		{
 			CopyDlg[i].Y1-=2;
 			CopyDlg[i].Y2-=2;
 		}
 
-		for (const auto& i: irange(ID_SC_MULTITARGET, ID_SC_BTNCANCEL + 1))
+		for (const auto i: std::views::iota(ID_SC_MULTITARGET + 0, ID_SC_BTNCANCEL + 1))
 		{
 			CopyDlg[i].Y1-=3;
 			CopyDlg[i].Y2-=3;
@@ -972,7 +969,7 @@ ShellCopy::ShellCopy(
 		}
 
 		CopyDlg[ID_SC_COMBO].ListItems=&ComboList;
-		const auto Dlg = Dialog::create(CopyDlg, &ShellCopy::CopyDlgProc, this);
+		const auto Dlg = Dialog::create(CopyDlg, std::bind_front(&ShellCopy::CopyDlgProc, this));
 		Dlg->SetHelp(Link? L"HardSymLink"sv : L"CopyFiles"sv);
 		Dlg->SetId(Link?HardSymLinkId:(Move?(CurrentOnly?MoveCurrentOnlyFileId:MoveFilesId):(CurrentOnly?CopyCurrentOnlyFileId:CopyFilesId)));
 		Dlg->SetPosition({ -1, -1, DlgW, DlgH });
@@ -1021,6 +1018,9 @@ ShellCopy::ShellCopy(
 					{
 						for (const auto& i: enum_tokens_with_quotes_t<with_trim>(strCopyDlgValue, L",;"sv))
 						{
+							if (i.empty())
+								continue;
+
 							m_DestList.emplace_back(i);
 						}
 					}
@@ -1170,7 +1170,7 @@ ShellCopy::ShellCopy(
 	strDestDizPath.clear();
 	SrcPanel->SaveSelection();
 	// TODO: Posix - bugbug
-	ReplaceSlashToBackslash(strCopyDlgValue);
+	path::inplace::normalize_separators(strCopyDlgValue);
 	// нужно ли показывать время копирования?
 	// ***********************************************************************
 	// **** Здесь все подготовительные операции закончены, можно приступать
@@ -1211,7 +1211,7 @@ ShellCopy::ShellCopy(
 		{
 			for (const auto& CreatedFolder: m_CreatedFolders)
 			{
-				if (const auto File = os::fs::file(CreatedFolder.FullName, GENERIC_WRITE, os::fs::file_share_all, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT))
+				if (const auto File = os::fs::file(CreatedFolder.FullName, FILE_WRITE_ATTRIBUTES, os::fs::file_share_all, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT))
 				{
 					set_file_time(File, CreatedFolder, true);
 				}
@@ -1356,7 +1356,9 @@ ShellCopy::ShellCopy(
 
 		NeedDizUpdate = true;
 
-		copy_selected_items(strNameTmp);
+		std::optional<error_state_ex> ErrorState;
+
+		copy_selected_items(strNameTmp, ErrorState);
 
 		flags::change(Flags, FCOPY_COPYSYMLINKCONTENTS, OldCopySymlinkContents);
 
@@ -1377,7 +1379,7 @@ ShellCopy::ShellCopy(
 }
 
 
-void ShellCopy::copy_selected_items(const string_view Dest)
+void ShellCopy::copy_selected_items(const string_view Dest, std::optional<error_state_ex>& ErrorState)
 {
 	//SaveScreen SaveScr;
 	os::fs::attributes DestAttr = INVALID_FILE_ATTRIBUTES;
@@ -1385,7 +1387,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 	if (Dest.empty() || IsCurrentDirectory(Dest))
 		return;
 
-	SetCursorType(false, 0);
+	HideCursor();
 
 	DWORD Flags0 = Flags;
 
@@ -1487,9 +1489,9 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 				auto Exists_2 = Exists_1;
 				while ( !Exists_2 && !SkipErrors)
 				{
-					const auto ErrorState = last_error();
+					ErrorState = os::last_error();
 
-					switch (OperationFailed(ErrorState, strDestDriveRoot, lng::MError, {}))
+					switch (OperationFailed(*ErrorState, strDestDriveRoot, lng::MError, {}))
 					{
 					case operation::retry:
 						Exists_2 = os::fs::exists(strDestDriveRoot);
@@ -1548,7 +1550,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 
 		if (RPT==RP_JUNCTION || RPT==RP_SYMLINK || RPT==RP_SYMLINKFILE || RPT==RP_SYMLINKDIR)
 		{
-			if (!MkSymLink(i.FileName, strDest, RPT))
+			if (!MkSymLink(i.FileName, strDest, RPT, ErrorState))
 				return;
 
 			// Отметим (Ins) несколько каталогов, ALT-F6 Enter - выделение с папок не снялось.
@@ -1571,7 +1573,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 				do
 				{
 					// attempt to move
-					CopyCode = ShellCopyOneFile(i.FileName, i, strDestPath, KeepPathPos, true);
+					CopyCode = ShellCopyOneFile(i.FileName, i, strDestPath, KeepPathPos, true, ErrorState);
 				}
 				while (CopyCode==COPY_RETRY);
 
@@ -1599,7 +1601,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 				}
 				else if (CopyCode == COPY_SKIPPED)
 				{
-					CP->skip();
+					CP->skip(i.FileSize);
 					continue;
 				}
 				else if (CopyCode == COPY_SUCCESS)
@@ -1617,7 +1619,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 			{
 				// copy or fallback from move
 				// for directories this only creates the top directory, the content is copied later (see below)
-				CopyCode = ShellCopyOneFile(i.FileName, i, strCopyDest, KeepPathPos, false);
+				CopyCode = ShellCopyOneFile(i.FileName, i, strCopyDest, KeepPathPos, false, ErrorState);
 			}
 			while (CopyCode==COPY_RETRY);
 
@@ -1627,7 +1629,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 			}
 			else
 			{
-				CP->skip();
+				CP->skip(i.FileSize);
 				continue;
 			}
 		}
@@ -1642,7 +1644,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 
 		// Mantis#44 - Потеря данных при копировании ссылок на папки
 		// если каталог (или нужно копировать симлинк) - придется рекурсивно спускаться...
-		if (RPT != RP_SYMLINKFILE && (i.Attributes & FILE_ATTRIBUTE_DIRECTORY) && ((Flags & FCOPY_COPYSYMLINKCONTENTS) || !os::fs::is_directory_symbolic_link(i)))
+		if (RPT != RP_SYMLINKFILE && os::fs::is_directory(i) && ((Flags & FCOPY_COPYSYMLINKCONTENTS) || !os::fs::is_directory_symbolic_link(i)))
 		{
 			string strFullName;
 			ScanTree ScTree(true, true, Flags & FCOPY_COPYSYMLINKCONTENTS);
@@ -1657,7 +1659,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 			os::fs::find_data SrcData;
 			while (ScTree.GetNextName(SrcData,strFullName))
 			{
-				const auto IsDirectory = os::fs::is_directory(SrcData.Attributes);
+				const auto IsDirectory = os::fs::is_directory(SrcData);
 
 				auto SubCopyCode = COPY_SUCCESS;
 
@@ -1687,7 +1689,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 
 						do
 						{
-							Ret=ShellCopyOneFile(strFullName,SrcData,strCopyDest,KeepPathPos,NeedRename);
+							Ret = ShellCopyOneFile(strFullName, SrcData, strCopyDest, KeepPathPos, NeedRename, ErrorState);
 						}
 						while (Ret==COPY_RETRY);
 
@@ -1695,7 +1697,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 						{
 							case COPY_SKIPPED:
 							{
-								CP->skip();
+								CP->skip(SrcData.FileSize);
 								continue;
 							}
 
@@ -1716,7 +1718,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 							}
 
 							default:
-								CP->skip();
+								CP->skip(SrcData.FileSize);
 						}
 					}
 
@@ -1729,7 +1731,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 
 					do
 					{
-						SubCopyCode = ShellCopyOneFile(strFullName, SrcData, strCopyDest, KeepPathPos, false);
+						SubCopyCode = ShellCopyOneFile(strFullName, SrcData, strCopyDest, KeepPathPos, false, ErrorState);
 					}
 					while (SubCopyCode==COPY_RETRY);
 
@@ -1742,7 +1744,7 @@ void ShellCopy::copy_selected_items(const string_view Dest)
 					}
 					else
 					{
-						CP->skip();
+						CP->skip(SrcData.FileSize);
 					}
 				}
 
@@ -1794,7 +1796,8 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
     const os::fs::find_data &SrcData,
     string &strDest,
 	int const KeepPathPos,
-	bool const Rename
+	bool const Rename,
+	std::optional<error_state_ex>& ErrorState
 )
 {
 	CP->reset_current();
@@ -1898,7 +1901,9 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				SrcData.ReparseTag,
 				IO_REPARSE_TAG_SYMLINK,
 				IO_REPARSE_TAG_MOUNT_POINT,
-				IO_REPARSE_TAG_APPEXECLINK
+				IO_REPARSE_TAG_NFS,
+				IO_REPARSE_TAG_APPEXECLINK,
+				IO_REPARSE_TAG_LX_SYMLINK
 			);
 		}
 		if (CopySymlinkContents)
@@ -1941,8 +1946,8 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				// Пытаемся переименовать, пока не отменят
 				while (!os::fs::move_file(Src, strDestPath))
 				{
-					const auto ErrorState = last_error();
-					switch (OperationFailed(ErrorState, Src, lng::MError, msg(lng::MCopyCannotRenameFolder), true, false))
+					ErrorState = os::last_error();
+					switch (OperationFailed(*ErrorState, Src, lng::MError, msg(lng::MCopyCannotRenameFolder), true, false))
 					{
 					case operation::retry:
 						continue;
@@ -1955,7 +1960,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 
 						while (!os::fs::create_directory(strDestPath, tmpsd? &TmpSecAttr : nullptr))
 						{
-							const auto CreateDirectoryErrorState = last_error();
+							const auto CreateDirectoryErrorState = os::last_error();
 							switch (OperationFailed(CreateDirectoryErrorState, strDestPath, lng::MError, msg(lng::MCopyCannotCreateFolder), true, false))
 							{
 							case operation::retry:
@@ -2006,12 +2011,12 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				while (!os::fs::create_directory(
 					// CreateDirectoryEx preserves reparse points,
 					// so we shouldn't use template when copying with content
-					os::fs::is_directory_symbolic_link(SrcData) && (Flags & FCOPY_COPYSYMLINKCONTENTS)? L""s : Src,
+					os::fs::is_directory_symbolic_link(SrcData) && (Flags & FCOPY_COPYSYMLINKCONTENTS)? L""sv : Src,
 					strDestPath,
 					sd? &SecAttr : nullptr))
 				{
-					const auto ErrorState = last_error();
-					const auto MsgCode = Message(MSG_WARNING, ErrorState,
+					ErrorState = os::last_error();
+					const auto MsgCode = Message(MSG_WARNING, *ErrorState,
 						msg(lng::MError),
 						{
 							msg(lng::MCopyCannotCreateFolder),
@@ -2049,7 +2054,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 			// Directory symbolic links and junction points are handled by CreateDirectoryEx.
 			if (!IsDirectory && IsReparsePoint && !CopySymlinkContents && RPT == RP_EXACTCOPY)
 			{
-				if (!MkSymLink(Src, strDestPath, RPT))
+				if (!MkSymLink(Src, strDestPath, RPT, ErrorState))
 					return COPY_FAILURE;
 			}
 
@@ -2082,8 +2087,6 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 
 		for (;;)
 		{
-			std::optional<error_state_ex> ErrorState;
-
 			if (!(Flags&FCOPY_COPYTONUL) && Rename)
 			{
 				int AskDelete;
@@ -2092,7 +2095,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				{
 					if (!os::fs::delete_file(strDestPath)) // BUGBUG
 					{
-						LOGWARNING(L"delete_file({}): {}"sv, strDestPath, last_error());
+						LOGWARNING(L"delete_file({}): {}"sv, strDestPath, os::last_error());
 					}
 				}
 
@@ -2104,7 +2107,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 
 					if (NWFS_Attr && !os::fs::set_file_attributes(strSrcFullName,SrcData.Attributes&(~FILE_ATTRIBUTE_READONLY))) // BUGBUG
 					{
-						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, last_error());
+						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, os::last_error());
 					}
 
 					FileMoved = os::fs::move_file(
@@ -2118,12 +2121,12 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 
 					if (!FileMoved)
 					{
-						ErrorState = last_error();
-						LOGWARNING(L"move_file({}, {}): {}"sv, strSrcFullName, strDestPath, last_error());
+						ErrorState = os::last_error();
+						LOGWARNING(L"move_file({}, {}): {}"sv, strSrcFullName, strDestPath, *ErrorState);
 
 						if (NWFS_Attr && !os::fs::set_file_attributes(strSrcFullName, SrcData.Attributes)) // BUGBUG
 						{
-							LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, last_error());
+							LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, os::last_error());
 						}
 
 						if (ErrorState->Win32Error == ERROR_NOT_SAME_DEVICE)
@@ -2137,7 +2140,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 
 					if (NWFS_Attr && !os::fs::set_file_attributes(strDestPath, SrcData.Attributes)) // BUGBUG
 					{
-						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, last_error());
+						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, os::last_error());
 					}
 
 					AskDelete=0;
@@ -2174,7 +2177,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				{
 					if (DestAttr != INVALID_FILE_ATTRIBUTES && Append && !os::fs::set_file_attributes(strDestPath, DestAttr)) // BUGBUG
 					{
-						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, last_error());
+						LOGWARNING(L"set_file_attributes({}): {}"sv, strDestPath, os::last_error());
 					}
 				};
 
@@ -2194,7 +2197,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 							strCopiedName != DestData.FileName &&
 							!os::fs::move_file(strDestPath, strDestPath)) // BUGBUG
 						{
-							LOGWARNING(L"move_file({}, {}): {}"sv, strDestPath, strDestPath, last_error());
+							LOGWARNING(L"move_file({}, {}): {}"sv, strDestPath, strDestPath, os::last_error());
 						}
 					}
 
@@ -2221,7 +2224,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 					//if (GetLastError() == ERROR_ACCESS_DENIED)
 					{
 						SetLastError(ERROR_ENCRYPTION_FAILED);
-						ErrorState = last_error();
+						ErrorState = os::last_error();
 					}
 
 					MsgCode = Message(MSG_WARNING, *ErrorState,
@@ -2258,7 +2261,7 @@ COPY_CODES ShellCopy::ShellCopyOneFile(
 				if (!SkipErrors)
 				{
 					if (!ErrorState)
-						ErrorState = last_error();
+						ErrorState = os::last_error();
 
 					MsgCode = Message(MSG_WARNING, *ErrorState,
 						msg(lng::MError),
@@ -2323,7 +2326,7 @@ void ShellCopy::CheckStreams(const string_view Src, const string_view DestPath)
 
 	const auto StreamsEnumerator = os::fs::enum_streams(Src);
 
-	if (!std::any_of(ALL_CONST_RANGE(StreamsEnumerator), [](WIN32_FIND_STREAM_DATA const& i){ return !starts_with(i.cStreamName, L"::"sv); }))
+	if (std::ranges::all_of(StreamsEnumerator, [](WIN32_FIND_STREAM_DATA const& i){ return string_view(i.cStreamName).starts_with(L"::"sv); }))
 		return;
 
 	switch (Message(MSG_WARNING, msg(lng::MWarning),
@@ -2394,7 +2397,7 @@ bool ShellCopy::DeleteAfterMove(const string_view Name, os::fs::attributes Attr)
 
 		if (!os::fs::set_file_attributes(FullName, FILE_ATTRIBUTE_NORMAL)) //BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, FullName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, FullName, os::last_error());
 		}
 	}
 
@@ -2404,7 +2407,7 @@ bool ShellCopy::DeleteAfterMove(const string_view Name, os::fs::attributes Attr)
 		if (((Attr & FILE_ATTRIBUTE_DIRECTORY)? os::fs::remove_directory : os::fs::delete_file)(FullName))
 			return true;
 
-		if (m_UseFilter && (Attr & FILE_ATTRIBUTE_DIRECTORY) && last_error().Win32Error == ERROR_DIR_NOT_EMPTY)
+		if (m_UseFilter && (Attr & FILE_ATTRIBUTE_DIRECTORY) && os::last_error().Win32Error == ERROR_DIR_NOT_EMPTY)
 		{
 			SkipDueToFilter = true;
 			return true;
@@ -2430,14 +2433,14 @@ bool ShellCopy::ShellCopyFile(
 		{
 			if (!os::fs::delete_file(strDestName)) //BUGBUG
 			{
-				LOGWARNING(L"delete_file({}): {}"sv, strDestName, last_error());
+				LOGWARNING(L"delete_file({}): {}"sv, strDestName, os::last_error());
 			}
 
-			return MkHardLink(SrcName,strDestName);
+			return MkHardLink(SrcName,strDestName, ErrorState, true);
 		}
 		else
 		{
-			return MkSymLink(SrcName, strDestName, RPT);
+			return MkSymLink(SrcName, strDestName, RPT, ErrorState, true);
 		}
 	}
 
@@ -2493,7 +2496,7 @@ bool ShellCopy::ShellCopyFile(
 		{
 			if (!Global->Opt->CMOpt.CopyOpened)
 			{
-				if (!os::fs::file(SrcName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN))
+				if (!os::fs::file(SrcName, GENERIC_READ, os::fs::file_share_read, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN))
 				{
 					return false;
 				}
@@ -2506,7 +2509,7 @@ bool ShellCopy::ShellCopyFile(
 	const auto sd = GetSecurity(SrcName);
 
 	os::fs::file_walker SrcFile;
-	const auto OpenMode = FILE_SHARE_READ | FILE_SHARE_DELETE | (Global->Opt->CMOpt.CopyOpened? FILE_SHARE_WRITE : 0);
+	const auto OpenMode = os::fs::file_share_read | (Global->Opt->CMOpt.CopyOpened? FILE_SHARE_WRITE : 0);
 	if (!SrcFile.Open(SrcName, GENERIC_READ, OpenMode, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN))
 		return false;
 
@@ -2514,6 +2517,36 @@ bool ShellCopy::ShellCopyFile(
 	unsigned long long AppendPos=0;
 
 	bool CopySparse=false;
+
+	const auto UndoDestFile = [&]
+	{
+		if (Flags & FCOPY_COPYTONUL)
+			return;
+
+		if (Append)
+		{
+			DestFile.SetPointer(AppendPos, nullptr, FILE_BEGIN);
+			if (!DestFile.SetEnd())
+			{
+				LOGWARNING(L"SetEndOfFile({}): {}"sv, strDestName, os::last_error()); // BUGBUG
+			}
+		}
+
+		DestFile.Close();
+
+		if (!Append)
+		{
+			if (!os::fs::set_file_attributes(strDestName, FILE_ATTRIBUTE_NORMAL)) // BUGBUG
+			{
+				LOGWARNING(L"set_file_attributes({}): {}"sv, strDestName, os::last_error());
+			}
+
+			if (!os::fs::delete_file(strDestName)) //BUGBUG
+			{
+				LOGWARNING(L"delete_file({}): {}"sv, strDestName, os::last_error());
+			}
+		}
+	};
 
 	if (!(Flags&FCOPY_COPYTONUL))
 	{
@@ -2529,7 +2562,7 @@ bool ShellCopy::ShellCopyFile(
 		if (!DestFile.Open(
 			strDestName,
 			GENERIC_WRITE,
-			FILE_SHARE_READ,
+			os::fs::file_share_read,
 			sd? &SecAttr : nullptr,
 			Append? OPEN_EXISTING : CREATE_ALWAYS,
 			(attrs & ~(IsSystemEncrypted? FILE_ATTRIBUTE_SYSTEM : 0)) | FILE_FLAG_SEQUENTIAL_SCAN))
@@ -2540,7 +2573,7 @@ bool ShellCopy::ShellCopyFile(
 
 		if (IsSystemEncrypted && !os::fs::set_file_attributes(strDestName, attrs)) //BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, strDestName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, strDestName, os::last_error());
 		}
 
 		const auto strDriveRoot = GetPathRoot(strDestName);
@@ -2562,52 +2595,45 @@ bool ShellCopy::ShellCopyFile(
 			if (!DestFile.SetPointer(0,&AppendPos,FILE_END))
 			{
 				SrcFile.Close();
-				DestFile.SetEnd();
+
+				if (!DestFile.SetEnd())
+				{
+					LOGWARNING(L"SetEndOfFile({}): {}"sv, strDestName, os::last_error()); // BUGBUG
+				}
+
 				DestFile.Close();
 				return false;
 			}
 		}
 
-		// если места в приёмнике хватает - займём сразу.
-		unsigned long long FreeBytes = 0;
-		if (os::fs::get_disk_size(strDriveRoot,nullptr,nullptr,&FreeBytes))
+		// Reserve the space for the file
+		const auto CurPtr = DestFile.GetPointer();
+		DestFile.SetPointer(SrcData.FileSize, nullptr, FILE_CURRENT);
+
+		while (!DestFile.SetEnd())
 		{
-			if (FreeBytes>SrcData.FileSize)
+			ErrorState = os::last_error();
+
+			switch (OperationFailed(*ErrorState, strDestName, lng::MError, msg(lng::MCopyCannotReserveSpace)))
 			{
-				const auto CurPtr = DestFile.GetPointer();
-				DestFile.SetPointer(SrcData.FileSize, nullptr, FILE_CURRENT);
-				DestFile.SetEnd();
-				DestFile.SetPointer(CurPtr, nullptr, FILE_BEGIN);
+			case operation::retry:
+				continue;
+
+			case operation::skip_all:
+				SkipErrors = true;
+				[[fallthrough]];
+			case operation::skip:
+				UndoDestFile();
+				return COPY_SKIPPED;
+
+			default:
+				UndoDestFile();
+				cancel_operation();
 			}
 		}
+
+		DestFile.SetPointer(CurPtr, nullptr, FILE_BEGIN);
 	}
-
-	const auto UndoDestFile = [&]
-	{
-		if (Flags & FCOPY_COPYTONUL)
-			return;
-
-		if (Append)
-		{
-			DestFile.SetPointer(AppendPos, nullptr, FILE_BEGIN);
-			DestFile.SetEnd();
-		}
-
-		DestFile.Close();
-
-		if (!Append)
-		{
-			if (!os::fs::set_file_attributes(strDestName, FILE_ATTRIBUTE_NORMAL)) // BUGBUG
-			{
-				LOGWARNING(L"set_file_attributes({}): {}"sv, strDestName, last_error());
-			}
-
-			if (!os::fs::delete_file(strDestName)) //BUGBUG
-			{
-				LOGWARNING(L"delete_file({}): {}"sv, strDestName, last_error());
-			}
-		}
-	};
 
 	if(SrcFile.InitWalk(CopyBufferSize))
 	{
@@ -2627,7 +2653,7 @@ bool ShellCopy::ShellCopyFile(
 			size_t BytesRead;
 			while (!SrcFile.Read(CopyBuffer.data(), SrcFile.GetChunkSize(), BytesRead))
 			{
-				ErrorState = last_error();
+				ErrorState = os::last_error();
 				const auto MsgCode = Message(MSG_WARNING, *ErrorState,
 					msg(lng::MError),
 					{
@@ -2662,7 +2688,7 @@ bool ShellCopy::ShellCopyFile(
 				DestFile.SetPointer(SrcFile.GetChunkOffset() + (Append? AppendPos : 0), nullptr, FILE_BEGIN);
 				while (!DestFile.Write(CopyBuffer.data(), BytesRead))
 				{
-					ErrorState = last_error();
+					ErrorState = os::last_error();
 					const auto MsgCode = Message(MSG_WARNING, *ErrorState,
 						msg(lng::MError),
 						{
@@ -2705,7 +2731,10 @@ bool ShellCopy::ShellCopyFile(
 				Pos+=AppendPos;
 
 			DestFile.SetPointer(Pos,nullptr,FILE_BEGIN);
-			DestFile.SetEnd();
+			if (!DestFile.SetEnd())
+			{
+				LOGWARNING(L"SetEndOfFile({}): {}"sv, strDestName, os::last_error()); // BUGBUG
+			}
 		}
 
 		set_file_time(DestFile, SrcData, Global->Opt->CMOpt.PreserveTimestamps);
@@ -2718,7 +2747,7 @@ bool ShellCopy::ShellCopyFile(
 		{
 			if (os::fs::drive::get_type(GetPathRoot(strDestName)) == DRIVE_REMOTE)
 			{
-				if (DestFile.Open(strDestName, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT))
+				if (DestFile.Open(strDestName, FILE_WRITE_ATTRIBUTES, os::fs::file_share_read, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT))
 				{
 					set_file_time(DestFile, SrcData, Global->Opt->CMOpt.PreserveTimestamps);
 
@@ -2792,27 +2821,28 @@ intptr_t ShellCopy::WarnDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 	{
 		case DM_OPENVIEWER:
 		{
-			if (const auto WFN = view_as<const file_names_for_overwrite_dialog*>(Dlg->SendMessage(DM_GETDLGDATA, 0, nullptr)))
-			{
-				NamesList List;
-				List.AddName(*WFN->Src);
-				List.AddName(*WFN->Dest);
-				const auto ViewName = *(Param1 == WDLG_SRCFILEBTN ? WFN->Src : WFN->Dest);
-				List.SetCurName(ViewName);
+			const auto& WFN = view_as<file_names_for_overwrite_dialog>(Dlg->SendMessage(DM_GETDLGDATA, 0, nullptr));
 
-				const auto Viewer = FileViewer::create(
-					ViewName,
-					false,
-					false,
-					true,
-					-1,
-					{},
-					&List,
-					false);
+			NamesList List;
+			List.AddName(*WFN.Src);
+			List.AddName(*WFN.Dest);
+			const auto ViewName = *(Param1 == WDLG_SRCFILEBTN? WFN.Src : WFN.Dest);
+			List.SetCurName(ViewName);
 
-				if (Viewer->GetExitCode()) Global->WindowManager->ExecuteModal(Viewer);
-				Global->WindowManager->ResizeAllWindows();
-			}
+			const auto Viewer = FileViewer::create(
+				ViewName,
+				false,
+				false,
+				true,
+				-1,
+				{},
+				&List,
+				false);
+
+			if (Viewer->GetExitCode())
+				Global->WindowManager->ExecuteModal(Viewer);
+
+			Global->WindowManager->ResizeAllWindows();
 		}
 		break;
 		case DN_CTLCOLORDLGITEM:
@@ -2878,8 +2908,8 @@ intptr_t ShellCopy::WarnDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* P
 		break;
 		case DN_CONTROLINPUT:
 		{
-			const auto record = static_cast<const INPUT_RECORD*>(Param2);
-			if (record->EventType == KEY_EVENT && any_of(Param1, WDLG_SRCFILEBTN, WDLG_DSTFILEBTN) && InputRecordToKey(record) == KEY_F3)
+			const auto& record = *static_cast<INPUT_RECORD const*>(Param2);
+			if (record.EventType == KEY_EVENT && any_of(Param1, WDLG_SRCFILEBTN, WDLG_DSTFILEBTN) && InputRecordToKey(&record) == KEY_F3)
 				Dlg->SendMessage(DM_OPENVIEWER, Param1, nullptr);
 		}
 		break;
@@ -2947,8 +2977,8 @@ bool ShellCopy::AskOverwrite(
 
 	const auto FormatLine = [&](const os::chrono::time_point TimePoint, lng Label, unsigned long long Size)
 	{
-		const auto [Date, Time] = ConvertDate(TimePoint, 8, 1);
-		return format(FSTR(L"{:26} {:20} {} {}"sv), msg(Label), Size, Date, Time);
+		const auto [Date, Time] = time_point_to_string(TimePoint, 8, 1);
+		return far::format(L"{:26} {:20} {} {}"sv, msg(Label), Size, Date, Time);
 	};
 
 	string strDestName(DestName);
@@ -2968,7 +2998,7 @@ bool ShellCopy::AskOverwrite(
 				DestDataFilled = os::fs::get_find_data(DestName, DestData);
 				if (!DestDataFilled)
 				{
-					LOGWARNING(L"get_find_data({}): {}"sv, DestName, last_error());
+					LOGWARNING(L"get_find_data({}): {}"sv, DestName, os::last_error());
 				}
 
 				if ((Flags&FCOPY_ONLYNEWERFILES))
@@ -3082,7 +3112,7 @@ bool ShellCopy::AskOverwrite(
 						DestDataFilled = os::fs::get_find_data(DestName, DestData);
 						if (!DestDataFilled)
 						{
-							LOGWARNING(L"get_find_data({}): {}"sv, DestName, last_error());
+							LOGWARNING(L"get_find_data({}): {}"sv, DestName, os::last_error());
 						}
 					}
 
@@ -3148,7 +3178,7 @@ bool ShellCopy::AskOverwrite(
 
 		if (!SameName && (DestAttr & (FILE_ATTRIBUTE_READONLY|FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM)) && !os::fs::set_file_attributes(DestName, FILE_ATTRIBUTE_NORMAL)) //BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, DestName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, DestName, os::last_error());
 		}
 
 	return true;
@@ -3169,7 +3199,7 @@ os::security::descriptor ShellCopy::GetSecurity(const string_view FileName)
 		if (SkipSecurityErrors)
 			return {};
 
-		const auto ErrorState = last_error();
+		const auto ErrorState = os::last_error();
 
 		switch (OperationFailed(ErrorState, FileName, lng::MError, msg(lng::MCannotGetSecurity)))
 		{
@@ -3201,7 +3231,7 @@ void ShellCopy::SetSecurity(const string_view FileName, const os::security::desc
 		if (SkipSecurityErrors)
 			return;
 
-		const auto ErrorState = last_error();
+		const auto ErrorState = os::last_error();
 
 		switch (OperationFailed(ErrorState, FileName, lng::MError, msg(lng::MCannotSetSecurity)))
 		{
@@ -3230,7 +3260,7 @@ void ShellCopy::ResetSecurity(const string_view FileName)
 		if (SkipSecurityErrors)
 			return;
 
-		const auto ErrorState = last_error();
+		const auto ErrorState = os::last_error();
 
 		switch (OperationFailed(ErrorState, FileName, lng::MError, msg(lng::MCannotSetSecurity)))
 		{
@@ -3251,39 +3281,53 @@ void ShellCopy::ResetSecurity(const string_view FileName)
 
 bool ShellCopy::ShellSystemCopy(const string_view SrcName, const string_view DestName, const os::fs::find_data &SrcData)
 {
+	m_FileHandleForStreamSizeFix = nullptr;
+	std::exception_ptr ExceptionPtr;
+
+	const auto callback = [&](
+		unsigned long long TotalFileSize,
+		unsigned long long TotalBytesTransferred,
+		unsigned long long StreamSize,
+		unsigned long long StreamBytesTransferred,
+		DWORD StreamNumber,
+		DWORD CallbackReason,
+		HANDLE SourceFile,
+		HANDLE DestinationFile
+	)
+	{
+		return cpp_try(
+		[&]
+		{
+			bool Abort = false;
+			if (CP->IsCancelled())
+			{
+				Abort=true;
+			}
+
+			CheckAndUpdateConsole();
+			//fix total size
+			if (StreamNumber == 1 && SourceFile != m_FileHandleForStreamSizeFix)
+			{
+				CP->add_total_bytes(TotalFileSize - StreamSize);
+				CP->set_current_total(TotalFileSize);
+				m_FileHandleForStreamSizeFix = SourceFile;
+			}
+
+			CP->set_current_copied(TotalBytesTransferred);
+
+			return Abort?
+				PROGRESS_CANCEL :
+				PROGRESS_CONTINUE;
+		},
+		save_exception_and_return<PROGRESS_CANCEL>(ExceptionPtr)
+		);
+	};
+
 	const auto sd = GetSecurity(SrcName);
 
-	m_FileHandleForStreamSizeFix = nullptr;
-
-	struct callback_data
+	if (!os::fs::copy_file(SrcName, DestName, callback, {}, Flags & FCOPY_DECRYPTED_DESTINATION? COPY_FILE_ALLOW_DECRYPTED_DESTINATION : 0))
 	{
-		ShellCopy* Owner;
-		std::exception_ptr ExceptionPtr;
-	};
-
-	struct callback_wrapper
-	{
-		static DWORD CALLBACK callback(LARGE_INTEGER TotalFileSize, LARGE_INTEGER TotalBytesTransferred, LARGE_INTEGER StreamSize, LARGE_INTEGER StreamBytesTransferred, DWORD StreamNumber, DWORD CallbackReason, HANDLE SourceFile, HANDLE DestinationFile, LPVOID Data)
-		{
-			const auto CallbackData = static_cast<callback_data*>(Data);
-
-			return cpp_try(
-			[&]
-			{
-				return CallbackData->Owner->CopyProgressRoutine(TotalFileSize.QuadPart, TotalBytesTransferred.QuadPart, StreamSize.QuadPart, StreamBytesTransferred.QuadPart, StreamNumber, CallbackReason, SourceFile, DestinationFile);
-			},
-			[&]
-			{
-				SAVE_EXCEPTION_TO(CallbackData->ExceptionPtr);
-				return PROGRESS_CANCEL;
-			});
-		}
-	};
-
-	callback_data CallbackData{ this };
-	if (!os::fs::copy_file(SrcName, DestName, callback_wrapper::callback, &CallbackData, nullptr, Flags&FCOPY_DECRYPTED_DESTINATION ? COPY_FILE_ALLOW_DECRYPTED_DESTINATION : 0))
-	{
-		rethrow_if(CallbackData.ExceptionPtr);
+		rethrow_if(ExceptionPtr);
 		Flags&=~FCOPY_DECRYPTED_DESTINATION;
 		if (GetLastError() == ERROR_REQUEST_ABORTED)
 			cancel_operation();
@@ -3305,28 +3349,6 @@ bool ShellCopy::ShellSystemCopy(const string_view SrcName, const string_view Des
 	}
 
 	return true;
-}
-
-DWORD ShellCopy::CopyProgressRoutine(unsigned long long TotalFileSize, unsigned long long TotalBytesTransferred, unsigned long long StreamSize, unsigned long long StreamBytesTransferred, DWORD StreamNumber, DWORD CallbackReason, HANDLE hSourceFile, HANDLE hDestinationFile)
-{
-	bool Abort = false;
-	if (CP->IsCancelled())
-	{
-		Abort=true;
-	}
-
-	CheckAndUpdateConsole();
-	//fix total size
-	if (StreamNumber == 1 && hSourceFile != m_FileHandleForStreamSizeFix)
-	{
-		CP->add_total_bytes(TotalFileSize - StreamSize);
-		CP->set_current_total(TotalFileSize);
-		m_FileHandleForStreamSizeFix = hSourceFile;
-	}
-
-	CP->set_current_copied(TotalBytesTransferred);
-
-	return Abort?PROGRESS_CANCEL:PROGRESS_CONTINUE;
 }
 
 std::pair<unsigned long long, unsigned long long> ShellCopy::CalcTotalSize() const
@@ -3431,7 +3453,7 @@ void Copy(panel_ptr SrcPanel, bool Move, bool Link, bool CurrentOnly, bool Ask, 
 	{
 		ShellCopy(SrcPanel, Move, Link, CurrentOnly, Ask, ToPlugin, PluginDestPath, ToSubdir);
 	}
-	catch (const operation_cancelled&)
+	catch (operation_cancelled const&)
 	{
 		// Nop
 	}

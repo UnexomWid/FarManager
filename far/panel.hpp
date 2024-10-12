@@ -39,13 +39,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "scrobj.hpp"
 #include "panelfwd.hpp"
 #include "panelctype.hpp"
+#include "plugin.hpp"
 
 // Platform:
 #include "platform.fwd.hpp"
 
 // Common:
 #include "common/enumerator.hpp"
-#include "common/range.hpp"
 #include "common/string_utils.hpp"
 
 // External:
@@ -54,8 +54,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class plugin_panel;
 class DizList;
-struct PluginPanelItem;
-struct OpenPanelInfo;
 
 struct column
 {
@@ -118,7 +116,7 @@ enum class panel_mode
 enum class panel_sort: int;
 enum class sort_order: int;
 
-span<std::pair<panel_sort, sort_order> const> default_sort_layers(panel_sort SortMode);
+std::span<std::pair<panel_sort, sort_order> const> default_sort_layers(panel_sort SortMode);
 
 class VMenu2;
 class Edit;
@@ -148,7 +146,7 @@ public:
 	virtual void EditFilter() {}
 	virtual bool FileInFilter(size_t idxItem) {return true;}
 	virtual bool FilterIsEnabled() {return false;}
-	virtual void ReadDiz(span<PluginPanelItem> Items = {}) {}
+	virtual void ReadDiz(std::span<PluginPanelItem> Items = {}) {}
 	virtual void DeleteDiz(string_view Name, string_view ShortName) {}
 	virtual string GetDizName() const { return {}; }
 	virtual void FlushDiz() {}
@@ -212,6 +210,8 @@ public:
 	virtual Viewer* GetById(int ID) { return nullptr;}
 	virtual void OnDestroy() {}
 	virtual void InitCurDir(string_view CurDir);
+	virtual void on_swap() {}
+	virtual void dispose(){}
 
 	panel_mode GetMode() const { return m_PanelMode; }
 	void SetMode(panel_mode Mode) { m_PanelMode = Mode; }
@@ -227,8 +227,8 @@ public:
 	void SetSortGroups(bool Mode) {m_SortGroups=Mode;}
 	bool GetShowShortNamesMode() const { return m_ShowShortNames; }
 	void SetShowShortNamesMode(bool Mode) {m_ShowShortNames=Mode;}
-	bool ExecShortcutFolder(int Pos);
-	bool ExecFolder(string_view Folder, const UUID& PluginUuid, const string& strPluginFile, const string& strPluginData, bool CheckType, bool TryClosest, bool Silent);
+	bool ExecShortcutFolder(size_t Index);
+	bool ExecFolder(string_view Folder, const UUID& PluginUuid, const string& strPluginFile, const string& strPluginData, bool CheckType, bool Silent);
 	bool SaveShortcutFolder(int Pos) const;
 	int SetPluginCommand(int Command,int Param1,void* Param2);
 	bool ProcessMouseDrag(const MOUSE_EVENT_RECORD* MouseEvent);
@@ -249,7 +249,7 @@ public:
 	auto enum_selected()
 	{
 		using value_type = os::fs::find_data;
-		return make_inline_enumerator<value_type>([this](const bool Reset, value_type& Value)
+		return inline_enumerator<value_type>([this](const bool Reset, value_type& Value)
 		{
 			if (Reset)
 				GetSelName(nullptr);

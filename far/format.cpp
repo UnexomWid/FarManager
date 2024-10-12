@@ -46,25 +46,21 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //----------------------------------------------------------------------------
 
-string fmt::formatter<std::exception, wchar_t, void>::to_string(std::exception const& Value)
-{
-	return ::format(FSTR(L"std::exception: {}"sv), encoding::utf8::get_chars(Value.what()));
-}
-
 WARNING_PUSH(3)
 
+WARNING_DISABLE_GCC("-Wdangling-reference")
 WARNING_DISABLE_GCC("-Wmissing-declarations")
 
 WARNING_DISABLE_CLANG("-Weverything")
 
 struct thousands_separator
 {
-	operator wchar_t() const
+	explicit(false) operator wchar_t() const
 	{
 		return ::locale.thousand_separator();
 	}
 
-	operator char() const
+	explicit(false) operator char() const
 	{
 		return static_cast<char>(operator wchar_t());
 	}
@@ -80,6 +76,6 @@ namespace
 {
 	SCOPED_ACTION(components::component)([]
 	{
-		return components::info{ L"fmt"sv, format(FSTR(L"{}.{}.{}"sv), FMT_VERSION / 10000, FMT_VERSION % 10000 / 100, FMT_VERSION % 100) };
+		return components::info{ L"fmt"sv, far::format(L"{}.{}.{}"sv, FMT_VERSION / 10000, FMT_VERSION % 10000 / 100, FMT_VERSION % 100) };
 	});
 }

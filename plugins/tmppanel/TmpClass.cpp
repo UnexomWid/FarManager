@@ -50,6 +50,12 @@ int TmpPanel::GetFindData(PluginPanelItem*& pPanelItem, size_t& pItemsNumber, co
 	for (;;)
 	{
 		const size_t Size = PsInfo.PanelControl(this, FCTL_GETCOLUMNTYPES, ColumnTypes.size(), ColumnTypes.data());
+		if (!Size)
+		{
+			ColumnTypes.clear();
+			break;
+		}
+
 		const auto CurrentSize = ColumnTypes.size();
 		ColumnTypes.resize(Size - 1);
 		if (Size - 1 <= CurrentSize)
@@ -73,7 +79,7 @@ void TmpPanel::GetOpenPanelInfo(OpenPanelInfo& Info)
 
 	if (!m_HostFile.empty())
 	{
-		if (const size_t Size = PsInfo.PanelControl(PANEL_ACTIVE, FCTL_GETCURRENTPANELITEM, 0, {}))
+		if (const size_t Size = PsInfo.PanelControl(this, FCTL_GETCURRENTPANELITEM, 0, {}))
 		{
 			const block_ptr<PluginPanelItem> ppi(Size);
 			FarGetPluginPanelItem gpi{ sizeof(gpi), Size, ppi.data() };
@@ -153,7 +159,7 @@ int TmpPanel::SetDirectory(const wchar_t* Dir, const OPERATION_MODES OpMode)
 }
 
 
-bool TmpPanel::PutFiles(const span<const PluginPanelItem> Files, const wchar_t* const SrcPath, const OPERATION_MODES)
+bool TmpPanel::PutFiles(const std::span<const PluginPanelItem> Files, const wchar_t* const SrcPath, const OPERATION_MODES)
 {
 	m_UpdateNotNeeded = false;
 	const auto Screen = BeginPutFiles();
@@ -204,7 +210,7 @@ bool TmpPanel::PutDirectoryContents(const wchar_t* Path)
 
 	SCOPE_EXIT{ PsInfo.FreeDirList(DirItems, DirItemsNumber); };
 
-	for (const auto& i: span(DirItems, DirItemsNumber))
+	for (const auto& i: std::span(DirItems, DirItemsNumber))
 	{
 		auto& NewItem = m_Panel->Items.emplace_back(i);
 		NewItem.FileName = m_Panel->StringData.emplace_back(NewItem.FileName).c_str();
@@ -223,6 +229,7 @@ bool TmpPanel::PutOneFile(const string& SrcPath, const PluginPanelItem& PanelIte
 		NewStr = concat(SrcPath, SrcPath.back() == L'\\'? L""sv : L"\\"sv, PanelItem.FileName);
 
 	NewItem.FileName = NewStr.c_str();
+	NewItem.AlternateFileName = {};
 	NewItem.Owner = m_Panel->OwnerData.emplace_back(NullToEmpty(NewItem.Owner)).c_str();
 	NewItem.UserData.Data = reinterpret_cast<void*>(m_Panel->Items.size() - 1);
 
@@ -255,7 +262,7 @@ void TmpPanel::CommitPutFiles(const HANDLE RestoreScreen, const bool Success)
 }
 
 
-int TmpPanel::SetFindList(const span<const PluginPanelItem> Files)
+int TmpPanel::SetFindList(const std::span<const PluginPanelItem> Files)
 {
 	const auto Screen = BeginPutFiles();
 	FindSearchResultsPanel();
@@ -282,7 +289,7 @@ void TmpPanel::FindSearchResultsPanel()
 
 	if (Opt.NewPanelForSearchResults)
 	{
-		std::optional<size_t> SearchResultsPanel = -1;
+		std::optional<size_t> SearchResultsPanel;
 
 		for (size_t i = 0; i != std::size(SharedData->CommonPanels); i++)
 		{
@@ -383,7 +390,7 @@ void TmpPanel::UpdateItems(const bool ShowOwners, const bool ShowLinks)
 	{
 		const string_view FullName(CurItem->FileName);
 		const auto SlashPos = FullName.rfind(L'\\');
-		const auto Dir = FullName.substr(0, SlashPos == FullName.npos? 0 : SlashPos);
+		const auto Dir = FullName.substr(0, SlashPos == FullName.npos? 0 : SlashPos + 1);
 		size_t SameFolderItems = 1;
 
 		/* $ 23.12.2001 DJ
@@ -396,7 +403,7 @@ void TmpPanel::UpdateItems(const bool ShowOwners, const bool ShowLinks)
 			for (auto Next = CurItem + 1; Next != end; ++Next)
 			{
 				const string_view NextName = Next->FileName;
-				if (starts_with(NextName, Dir) && !contains(NextName.substr(Dir.size()), L'\\'))
+				if (NextName.starts_with(Dir) && !contains(NextName.substr(Dir.size()), L'\\'))
 					SameFolderItems++;
 				else
 					break;
@@ -413,7 +420,7 @@ void TmpPanel::UpdateItems(const bool ShowOwners, const bool ShowLinks)
 			const auto FindFile = Dir + L"*"sv;
 			const auto NtPath = FormNtPath(FindFile);
 
-			for (auto& j: range(CurItem, SameFolderItems))
+			for (auto& j: std::ranges::subrange(CurItem, CurItem + SameFolderItems))
 				j.Flags |= REMOVE_FLAG;
 
 			if (const auto FindHandle = FindFirstFile(NtPath.c_str(), &FindData); FindHandle != INVALID_HANDLE_VALUE)
@@ -422,7 +429,7 @@ void TmpPanel::UpdateItems(const bool ShowOwners, const bool ShowLinks)
 
 				do
 				{
-					for (auto& j: range(CurItem, SameFolderItems))
+					for (auto& j: std::ranges::subrange(CurItem, CurItem + SameFolderItems))
 					{
 						if ((j.Flags & REMOVE_FLAG) && same_name(FindData, j))
 						{
@@ -457,6 +464,12 @@ void TmpPanel::UpdateItems(const bool ShowOwners, const bool ShowLinks)
 				for (;;)
 				{
 					const auto Size = FSF.GetFileOwner({}, CurItem.FileName, OwnerData.data(), OwnerData.size());
+					if (!Size)
+					{
+						OwnerData.clear();
+						break;
+					}
+
 					const auto CurrentSize = OwnerData.size();
 					OwnerData.resize(Size - 1);
 					if (Size - 1 <= CurrentSize)
@@ -525,8 +538,10 @@ bool TmpPanel::ProcessKey(const INPUT_RECORD* Rec)
 
 	const auto Key = Rec->Event.KeyEvent.wVirtualKeyCode;
 	const auto ControlState = Rec->Event.KeyEvent.dwControlKeyState;
+	bool isAltShift = ControlState == (SHIFT_PRESSED | LEFT_ALT_PRESSED) || ControlState == (SHIFT_PRESSED | RIGHT_ALT_PRESSED);
+	bool isCtrl = ControlState == LEFT_CTRL_PRESSED || ControlState == RIGHT_CTRL_PRESSED;
 
-	if (ControlState == (SHIFT_PRESSED | LEFT_ALT_PRESSED) && Key == VK_F3)
+	if (isAltShift && Key == VK_F3)
 	{
 		if (const auto CurFileName = IsCurrentFileCorrect(); !CurFileName.empty())
 		{
@@ -557,7 +572,7 @@ bool TmpPanel::ProcessKey(const INPUT_RECORD* Rec)
 		}
 	}
 
-	if (ControlState != LEFT_CTRL_PRESSED && Key >= VK_F3 && Key <= VK_F8 && Key != VK_F7)
+	if (!isCtrl && Key >= VK_F3 && Key <= VK_F8 && Key != VK_F7)
 	{
 		if (IsCurrentFileCorrect().empty())
 			return true;
@@ -572,7 +587,7 @@ bool TmpPanel::ProcessKey(const INPUT_RECORD* Rec)
 		}
 	}
 
-	if (Opt.SafeModePanel && ControlState == LEFT_CTRL_PRESSED && Key == VK_PRIOR)
+	if (Opt.SafeModePanel && isCtrl && Key == VK_PRIOR)
 	{
 		if (const auto CurFileName = IsCurrentFileCorrect(); !CurFileName.empty())
 		{
@@ -590,14 +605,14 @@ bool TmpPanel::ProcessKey(const INPUT_RECORD* Rec)
 		ProcessRemoveKey();
 		return true;
 	}
-	else if (ControlState == (SHIFT_PRESSED | LEFT_ALT_PRESSED) && Key == VK_F2)
+	else if (isAltShift && Key == VK_F2)
 	{
 		ProcessSaveListKey();
 		return true;
 	}
 	else
 	{
-		if (Opt.CommonPanel && ControlState == (SHIFT_PRESSED | LEFT_ALT_PRESSED))
+		if (Opt.CommonPanel && isAltShift)
 		{
 			if (Key == VK_F12)
 			{
@@ -669,7 +684,7 @@ void TmpPanel::ProcessSaveListKey()
 		append(ListPath, L'.', Ext);
 
 	string Buffer(NT_MAX_PATH, 0);
-	if (PsInfo.InputBox(&MainGuid, {}, GetMsg(MTempPanel), GetMsg(MListFilePath), L"TmpPanel.SaveList", ListPath.c_str(), Buffer.data(), Buffer.size(), {}, FIB_BUTTONS))
+	if (PsInfo.InputBox(&MainGuid, &SaveListDialogGuid, GetMsg(MTempPanel), GetMsg(MListFilePath), L"TmpPanel.SaveList", ListPath.c_str(), Buffer.data(), Buffer.size(), {}, FIB_BUTTONS))
 	{
 		ListPath = Buffer.c_str(); // REQUIRED, we don't know the size
 		SaveListFile(ListPath);
@@ -711,6 +726,8 @@ void TmpPanel::SaveListFile(const string& Path)
 		WriteFile(File, &bom, sizeof(bom), &BytesWritten, {});
 	}
 
+	std::string Dest;
+
 	for (const auto& i: m_Panel->Items)
 	{
 		const string_view FName = i.FileName;
@@ -724,10 +741,9 @@ void TmpPanel::SaveListFile(const string& Path)
 		else
 		{
 			const auto CRLF = "\r\n";
-			std::string Dest;
-			const auto Required = WideCharToMultiByte(CP_UTF8, 0, FName.data(), -1, {}, 0, {}, {});
+			const auto Required = WideCharToMultiByte(CP_UTF8, 0, FName.data(), static_cast<int>(FName.size()), {}, 0, {}, {});
 			Dest.resize(Required);
-			Dest.resize(WideCharToMultiByte(CP_UTF8, 0, FName.data(), -1, Dest.data(), static_cast<int>(Dest.size()), {}, {}));
+			Dest.resize(WideCharToMultiByte(CP_UTF8, 0, FName.data(), static_cast<int>(FName.size()), Dest.data(), static_cast<int>(Dest.size()), {}, {}));
 			WriteFile(File, Dest.data(), static_cast<DWORD>(Dest.size()), &BytesWritten, {});
 			WriteFile(File, CRLF, 2 * sizeof(char), &BytesWritten, {});
 		}

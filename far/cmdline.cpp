@@ -61,7 +61,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "mix.hpp"
 #include "console.hpp"
 #include "panelmix.hpp"
-#include "message.hpp"
 #include "network.hpp"
 #include "plugins.hpp"
 #include "colormix.hpp"
@@ -75,6 +74,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "global.hpp"
 #include "log.hpp"
 #include "char_width.hpp"
+#include "stddlg.hpp"
 
 // Platform:
 #include "platform.env.hpp"
@@ -180,7 +180,7 @@ size_t CommandLine::DrawPrompt()
 		}
 
 		if (CurLength + str.size() > MaxLength)
-			inplace::truncate_path(str, std::max(size_t{}, MaxLength - CurLength));
+			inplace::truncate_path(str, std::max(0uz, MaxLength - CurLength));
 		SetColor(i.Colour);
 		Text(str);
 		CurLength += str.size();
@@ -206,7 +206,12 @@ void CommandLine::DisplayObject()
 
 void CommandLine::DrawFakeCommand(string_view const FakeCommand)
 {
+	console.SetCursorPosition({ m_Where.left, m_Where.top });
+	console.start_prompt();
 	DrawPrompt();
+
+	console.SetCursorPosition({ WhereX(), WhereY() });
+	console.start_command();
 	SetColor(COL_COMMANDLINE);
 	// TODO: wrap & scroll if too long
 	Text(FakeCommand);
@@ -344,7 +349,7 @@ bool CommandLine::ProcessKey(const Manager::Key& Key)
 			history_record_type Type;
 			string strStr;
 			const auto SelectType = Global->CtrlObject->CmdHistory->Select(msg(lng::MHistoryTitle), L"History"sv, strStr, Type);
-			if (SelectType == HRT_ENTER || SelectType == HRT_SHIFTETNER || SelectType == HRT_CTRLENTER || SelectType == HRT_CTRLALTENTER)
+			if (SelectType == HRT_ENTER || SelectType == HRT_SHIFTENTER || SelectType == HRT_CTRLENTER || SelectType == HRT_CTRLALTENTER)
 			{
 				std::optional<SetAutocomplete> disable;
 				if(SelectType != HRT_CTRLENTER)
@@ -413,11 +418,11 @@ bool CommandLine::ProcessKey(const Manager::Key& Key)
 			switch(const auto SelectType = Global->CtrlObject->FolderHistory->Select(msg(lng::MFolderHistoryTitle), L"HistoryFolders"sv, strStr, Type, &Uuid, &strFile, &strData))
 			{
 			case HRT_ENTER:
-			case HRT_SHIFTETNER:
+			case HRT_SHIFTENTER:
 			case HRT_CTRLSHIFTENTER:
 				{
 					auto Suppressor = Global->CtrlObject->FolderHistory->suppressor();
-					if (SelectType != HRT_SHIFTETNER)
+					if (SelectType != HRT_SHIFTENTER)
 						Suppressor.reset();
 
 					// пусть плагин сам прыгает... ;-)
@@ -428,7 +433,7 @@ bool CommandLine::ProcessKey(const Manager::Key& Key)
 
 					//Type==1 - плагиновый путь
 					//Type==0 - обычный путь
-					Panel->ExecFolder(strStr, Uuid, strFile, strData, true, true, false);
+					Panel->ExecFolder(strStr, Uuid, strFile, strData, true, false);
 					// Panel may be changed
 					if(SelectType == HRT_CTRLSHIFTENTER)
 					{
@@ -633,16 +638,18 @@ std::list<CommandLine::segment> CommandLine::GetPrompt()
 		const string_view Format = Global->Opt->CmdLine.strPromptFormat.Get();
 		auto SegmentBegin = Format.cbegin();
 		auto Color = PrefixColor;
-		FOR_CONST_RANGE(Format, Iterator)
+		for (auto Iterator = Format.cbegin(); Iterator != Format.cend();)
 		{
 			bool Stop;
 			auto NewColor = PrefixColor;
-			const auto Str = make_string_view(Iterator, Format.cend());
+			string_view const Str{ Iterator, Format.cend() };
 			const auto Tail = colors::ExtractColorInNewFormat(Str, NewColor, Stop);
 			if (Tail.size() == Str.size())
 			{
 				if (Stop)
 					break;
+
+				++Iterator;
 				continue;
 			}
 
@@ -660,17 +667,22 @@ std::list<CommandLine::segment> CommandLine::GetPrompt()
 		{
 			const auto strExpandedDestStr = os::env::expand(Iterator->Text);
 			Iterator->Text.clear();
-			static const std::pair<wchar_t, wchar_t> ChrFmt[] =
+
+			const auto escaped_char = [](wchar_t const Char)
 			{
-				{L'A', L'&'},   // $A - & (Ampersand)
-				{L'B', L'|'},   // $B - | (pipe)
-				{L'C', L'('},   // $C - ( (Left parenthesis)
-				{L'F', L')'},   // $F - ) (Right parenthesis)
-				{L'G', L'>'},   // $G - > (greater-than sign)
-				{L'L', L'<'},   // $L - < (less-than sign)
-				{L'Q', L'='},   // $Q - = (equal sign)
-				{L'S', L' '},   // $S - (space)
-				{L'$', L'$'},   // $$ - $ (dollar sign)
+				switch (Char)
+				{
+				case L'A': return L'&';
+				case L'B': return L'|';
+				case L'C': return L'(';
+				case L'F': return L')';
+				case L'G': return L'>';
+				case L'L': return L'<';
+				case L'Q': return L'=';
+				case L'S': return L' ';
+				case L'$': return L'$';
+				default:   return L'\0';
+				}
 			};
 
 			FOR_CONST_RANGE(strExpandedDestStr, it)
@@ -680,15 +692,9 @@ std::list<CommandLine::segment> CommandLine::GetPrompt()
 				if (*it == L'$' && it + 1 != strExpandedDestStr.cend())
 				{
 					const auto Chr = upper(*++it);
-
-					const auto ItemIterator = std::find_if(CONST_RANGE(ChrFmt, Item)
+					if (const auto EscapedChar = escaped_char(Chr))
 					{
-						return Item.first == Chr;
-					});
-
-					if (ItemIterator != std::cend(ChrFmt))
-					{
-						strDestStr += ItemIterator->second;
+						strDestStr += EscapedChar;
 					}
 					else
 					{
@@ -849,10 +855,10 @@ void CommandLine::ShowViewEditHistory()
 	switch(const auto SelectType = Global->CtrlObject->ViewHistory->Select(msg(lng::MViewHistoryTitle), L"HistoryViews"sv, strStr, Type))
 	{
 	case HRT_ENTER:
-	case HRT_SHIFTETNER:
+	case HRT_SHIFTENTER:
 		{
 			auto Suppressor = Global->CtrlObject->ViewHistory->suppressor();
-			if (SelectType != HRT_SHIFTETNER)
+			if (SelectType != HRT_SHIFTENTER)
 				Suppressor.reset();
 
 			switch (Type)
@@ -905,20 +911,25 @@ void CommandLine::SetPromptSize(int NewSize)
 	PromptSize = NewSize? std::clamp(NewSize, 5, 95) : DEFAULT_CMDLINE_WIDTH;
 }
 
-static bool ProcessFarCommands(string_view Command, function_ref<void(bool)> const ConsoleActivatior)
+static bool ProcessFarCommands(string_view Command, function_ref<void()> const ConsoleActivatior)
 {
 	inplace::trim(Command);
 
-	if (equal_icase(Command, L"far:config"sv))
+	if (constexpr auto Prefix = L"far:"sv; Command.starts_with(Prefix))
+		Command.remove_prefix(Prefix.size());
+	else
+		return false;
+
+	if (equal_icase(Command, L"config"sv))
 	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 		Global->Opt->AdvancedConfig();
 		return true;
 	}
 
-	if (equal_icase(Command, L"far:about"sv))
+	if (equal_icase(Command, L"about"sv))
 	{
-		ConsoleActivatior(true);
+		ConsoleActivatior();
 
 		std::wcout << L'\n' << build::version_string() << L'\n' << build::copyright() << L'\n';
 
@@ -927,17 +938,12 @@ static bool ProcessFarCommands(string_view Command, function_ref<void(bool)> con
 			std::wcout << L"\nSCM revision:\n"sv << Revision << L'\n';
 		}
 
-		const auto CompilerInfo =
-#ifdef _MSC_BUILD
-			L"." WSTR(_MSC_BUILD)
-#endif
-			L""sv;
-
-		std::wcout << L"\nCompiler:\n"sv << format(FSTR(L"{}, version {}.{}.{}{}"sv), COMPILER_NAME, COMPILER_VERSION_MAJOR, COMPILER_VERSION_MINOR, COMPILER_VERSION_PATCH, CompilerInfo) << L'\n';
+		std::wcout << L"\nCompiler:\n"sv << build::compiler() << L'\n';
+		std::wcout << L"\nStandard library:\n"sv << build::library() << L'\n';
 
 		if (const auto& ComponentsInfo = components::GetComponentsInfo(); !ComponentsInfo.empty())
 		{
-			std::wcout << L"\nLibraries:\n"sv;
+			std::wcout << L"\nThird party libraries:\n"sv;
 
 			for (const auto& [Name, Version]: ComponentsInfo)
 			{
@@ -950,7 +956,7 @@ static bool ProcessFarCommands(string_view Command, function_ref<void(bool)> con
 			}
 		}
 
-		if (const auto& Factories = Global->CtrlObject->Plugins->Factories(); std::any_of(ALL_CONST_RANGE(Factories), [](const auto& i) { return i->IsExternal(); }))
+		if (const auto& Factories = Global->CtrlObject->Plugins->Factories(); std::ranges::any_of(Factories, [](const auto& i) { return i->IsExternal(); }))
 		{
 			std::wcout << L"\nPlugin adapters:\n"sv;
 			for (const auto& i: Factories)
@@ -975,14 +981,20 @@ static bool ProcessFarCommands(string_view Command, function_ref<void(bool)> con
 		return true;
 	}
 
-	if (const auto LogCommand = L"far:log"sv; starts_with_icase(Command, LogCommand))
+	if (const auto LogCommand = L"log"sv; starts_with_icase(Command, LogCommand))
 	{
-		if (const auto LogParameters = Command.substr(LogCommand.size()); starts_with(LogParameters, L' ') || LogParameters.empty())
+		if (const auto LogParameters = Command.substr(LogCommand.size()); LogParameters.starts_with(L' ') || LogParameters.empty())
 		{
-			ConsoleActivatior(false);
+			ConsoleActivatior();
 			logging::configure(trim(LogParameters));
 			return true;
 		}
+	}
+
+	if (equal_icase(Command, L"regex"sv))
+	{
+		regex_playground();
+		return true;
 	}
 
 	return false;
@@ -990,7 +1002,7 @@ static bool ProcessFarCommands(string_view Command, function_ref<void(bool)> con
 
 static void ProcessEcho(execute_info& Info)
 {
-	if (!starts_with(Info.Command, L'@'))
+	if (!Info.Command.starts_with(L'@'))
 		return;
 
 	Info.Echo = false;
@@ -1008,7 +1020,7 @@ void CommandLine::ExecString(execute_info& Info)
 	SCOPE_EXIT
 	{
 		if (ExecutionContext)
-			ExecutionContext->DoEpilogue(Info.Echo && !Info.Command.empty());
+			ExecutionContext->DoEpilogue(Info.Echo && !Info.Command.empty(), true);
 
 		if (!IsUpdateNeeded)
 			return;
@@ -1028,7 +1040,7 @@ void CommandLine::ExecString(execute_info& Info)
 		}
 	};
 
-	const auto Activator = [&](bool DoConsolise)
+	const auto Activator = [&]
 	{
 		if (!ExecutionContext)
 			ExecutionContext = Global->WindowManager->Desktop()->ConsoleSession().GetContext();
@@ -1039,15 +1051,18 @@ void CommandLine::ExecString(execute_info& Info)
 			ExecutionContext->DrawCommand(Info.DisplayCommand.empty()? Info.Command : Info.DisplayCommand);
 
 		ExecutionContext->DoPrologue();
+		ExecutionContext->Consolise();
 
-		if (DoConsolise)
-			ExecutionContext->Consolise();
+		if (Info.Echo)
+			std::wcout << std::endl;
 	};
 
 	if (Info.Command.empty())
 	{
 		// Just scroll the screen
-		Activator(false);
+		Activator();
+		console.start_output();
+		console.command_finished();
 		return;
 	}
 
@@ -1058,7 +1073,7 @@ void CommandLine::ExecString(execute_info& Info)
 	if (Info.SourceMode == execute_info::source_mode::unknown)
 	{
 		ProcessEcho(Info);
-		if (starts_with(Info.Command, L'@'))
+		if (Info.Command.starts_with(L'@'))
 		{
 			Info.Echo = false;
 			if (Info.DisplayCommand.empty())
@@ -1070,14 +1085,14 @@ void CommandLine::ExecString(execute_info& Info)
 
 		if (!ExtractIfExistCommand(Info.Command))
 		{
-			Activator(false);
+			Activator();
 			return;
 		}
 
 		ProcessEcho(Info);
 		if (Info.Command.empty())
 		{
-			Activator(false);
+			Activator();
 			return;
 		}
 
@@ -1090,7 +1105,10 @@ void CommandLine::ExecString(execute_info& Info)
 				return;
 
 			if (ProcessOSCommands(Info.Command, Activator))
+			{
+				console.command_finished(EXIT_SUCCESS);
 				return;
+			}
 		}
 	}
 
@@ -1100,36 +1118,32 @@ void CommandLine::ExecString(execute_info& Info)
 	IsUpdateNeeded = true;
 }
 
-bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void(bool)> const ConsoleActivatior)
+bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void()> const ConsoleActivatior)
 {
 	auto SetPanel = Global->CtrlObject->Cp()->ActivePanel();
 
 	if (SetPanel->GetType() != panel_type::FILE_PANEL && Global->CtrlObject->Cp()->PassivePanel()->GetType() == panel_type::FILE_PANEL)
 		SetPanel=Global->CtrlObject->Cp()->PassivePanel();
 
-	const auto IsCommand = [&CmdLine](const string_view cmd, const bool bslash)
+	const auto Trimmed = trim(CmdLine);
+
+	const auto Command = Trimmed.substr(0, Trimmed.find_first_of(L' '));
+	const auto Arguments = trim_left(Trimmed.substr(Command.size()));
+
+	// Cursed spaceless DOS legacy syntax like cd\ or cd/d
+	// Technically other commands can use this syntax too, but we limit it to cd/chdir
+	const auto CommandCursed = Trimmed.substr(0, Trimmed.find_first_of(L" \\/"));
+	const auto ArgumentsCursed = trim_left(Trimmed.substr(CommandCursed.size()));
+
+	const auto FindKey = [&](string_view const Where, wchar_t const Key)
 	{
-		const auto n = cmd.size();
-		return starts_with_icase(CmdLine, cmd)
-			&& (n == CmdLine.size() || contains(L"/ \t"sv, CmdLine[n]) || (bslash && CmdLine[n] == L'\\'));
+		const wchar_t Param[] = { L'/', Key, {} };
+		return starts_with_icase(Where, Param) && (Where.size() == 2 || Where[2] == L' ');
 	};
 
-	const auto FindKey = [&CmdLine](wchar_t Key)
+	if (Command.size() == 2 && Command[1] == L':' && Arguments.empty())
 	{
-		const auto FirstSpacePos = CmdLine.find(L' ');
-		const auto NotSpacePos = CmdLine.find_first_not_of(L' ', FirstSpacePos);
-
-		return NotSpacePos != string::npos &&
-			CmdLine.size() > NotSpacePos + 1 &&
-			CmdLine[NotSpacePos] == L'/' &&
-			upper(CmdLine[NotSpacePos + 1]) == upper(Key);
-	};
-
-	const auto FindHelpKey = [&FindKey]() { return FindKey(L'?'); };
-
-	if (CmdLine.size() > 1 && CmdLine[1] == L':' && (CmdLine.size() == 2 || CmdLine.find_first_not_of(L' ', 2) == string::npos))
-	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		const auto DriveLetter = upper(CmdLine[0]);
 		if (!FarChDir(os::fs::drive::get_device_path(DriveLetter)))
@@ -1140,18 +1154,17 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 		return true;
 	}
 
-	if (FindHelpKey())
+	if (FindKey(Arguments, L'?'))
 		return false;
 
-	const auto CommandSet = L"SET"sv;
 	// SET [variable=[value]]
-	if (IsCommand(CommandSet, false))
+	if (equal_icase(Command, L"SET"sv))
 	{
-		if (FindKey(L'A') || FindKey(L'P'))
+		if (FindKey(Arguments, L'A') || FindKey(Arguments, L'P'))
 			return false; //todo: /p - dialog, /a - calculation; then set variable ...
 
 		size_t pos;
-		const auto SetParams = trim_left(CmdLine.substr(CommandSet.size()));
+		const auto SetParams = unquote(trim_right(Arguments));
 
 		// "set" (display all) or "set var" (display all that begin with "var")
 		if (SetParams.empty() || ((pos = SetParams.find(L'=')) == string::npos) || !pos)
@@ -1160,14 +1173,12 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 			if (SetParams.find_first_of(L"|>"sv) != SetParams.npos)
 				return false;
 
-			const auto UnquotedSetParams = unquote(SetParams);
-
-			ConsoleActivatior(true);
+			ConsoleActivatior();
 
 			const os::env::provider::strings EnvStrings;
 			for (const auto& i: enum_substrings(EnvStrings.data()))
 			{
-				if (starts_with_icase(i, UnquotedSetParams))
+				if (starts_with_icase(i, SetParams))
 				{
 					std::wcout << i << L'\n';
 				}
@@ -1177,10 +1188,10 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 			return true;
 		}
 
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
-		const auto VariableValue = trim_right(SetParams.substr(pos + 1));
-		const auto VariableName = unquote(SetParams.substr(0, pos));
+		const auto VariableValue = SetParams.substr(pos + 1);
+		const auto VariableName = SetParams.substr(0, pos);
 
 		if (VariableValue.empty()) //set var=
 		{
@@ -1194,10 +1205,9 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 		return true;
 	}
 
-	const auto CommandCls = L"CLS"sv;
-	if (IsCommand(CommandCls, false))
+	if (equal_icase(Command, L"CLS"sv))
 	{
-		if (!trim_left(CmdLine.substr(CommandCls.size())).empty())
+		if (!Arguments.empty())
 		{
 			// Theoretically, in cmd "cls" and "cls blablabla" are the same things.
 			// But, if the user passed some parameters to cls it's quite probably
@@ -1206,20 +1216,19 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 			return false;
 		}
 
-		ConsoleActivatior(false);
-		ClearScreen(colors::PaletteColorToFarColor(COL_COMMANDLINEUSERSCREEN));
+		ConsoleActivatior();
+		console.Clear(colors::PaletteColorToFarColor(COL_COMMANDLINEUSERSCREEN));
 		return true;
 	}
 
 	// PUSHD путь | ..
-	const auto CommandPushd = L"PUSHD"sv;
-	if (IsCommand(CommandPushd, false))
+	if (equal_icase(Command, L"PUSHD"sv))
 	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		const auto PushDir = m_CurDir;
 
-		if (IntChDir(trim(CmdLine.substr(CommandPushd.size())), true))
+		if (const auto NewDir = trim_right(Arguments); NewDir.empty() || IntChDir(NewDir, true))
 		{
 			ppstack.push(PushDir);
 			os::env::set(L"FARDIRSTACK"sv, PushDir);
@@ -1230,9 +1239,9 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 
 	// POPD
 	// TODO: добавить необязательный параметр - число, сколько уровней пропустить, после чего прыгнуть.
-	if (IsCommand(L"POPD"sv, false))
+	if (equal_icase(Command, L"POPD"sv))
 	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		if (!ppstack.empty())
 		{
@@ -1253,9 +1262,9 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 	}
 
 	// CLRD
-	if (IsCommand(L"CLRD"sv, false))
+	if (equal_icase(Command, L"CLRD"sv))
 	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		clear_and_shrink(ppstack);
 		os::env::del(L"FARDIRSTACK"sv);
@@ -1268,10 +1277,9 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 			nnn   Specifies a code page number (Dec or Hex).
 		Type CHCP without a parameter to display the active code page number.
 	*/
-	const auto CommandChcp = L"CHCP"sv;
-	if (IsCommand(CommandChcp, false))
+	if (equal_icase(Command, L"CHCP"sv))
 	{
-		const auto ChcpParams = trim(CmdLine.substr(CommandChcp.size()));
+		const auto ChcpParams = trim_right(Arguments);
 		uintptr_t cp;
 		if (!from_string(ChcpParams, cp))
 			return false;
@@ -1286,19 +1294,16 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 			char_width::invalidate();
 		}
 
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		Text(ChcpParams);
-		ScrollScreen(1);
+
 		return true;
 	}
 
-	const auto CommandCd = L"CD"sv;
-	const auto CommandChdir = L"CHDIR"sv;
-	const auto IsCommandCd = IsCommand(CommandCd, true);
-	if (IsCommandCd || IsCommand(CommandChdir, true))
+	if (const auto IsCommandCd = equal_icase(CommandCursed, L"CD"sv); IsCommandCd || equal_icase(CommandCursed, L"CHDIR"sv))
 	{
-		auto CdParams = trim(CmdLine.substr(IsCommandCd? CommandCd.size() : CommandChdir.size()));
+		auto CdParams = trim_right(ArgumentsCursed);
 
 		//проигнорируем /D
 		//мы и так всегда меняем диск а некоторые в алайсах или по привычке набирают этот ключ
@@ -1312,20 +1317,17 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 		if (CdParams.empty())
 			return false;
 
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
 		IntChDir(CdParams, !IsCommandCd);
 		return true;
 	}
 
-	const auto CommandTitle = L"TITLE"sv;
-	if (IsCommand(CommandTitle, false))
+	if (equal_icase(Command, L"TITLE"))
 	{
-		ConsoleActivatior(false);
+		ConsoleActivatior();
 
-		const auto Title = CmdLine.substr(CommandTitle.size());
-
-		ConsoleTitle::SetUserTitle(Title.empty()? Title : Title.substr(1));
+		ConsoleTitle::SetUserTitle(Arguments);
 
 		if (!(Global->CtrlObject->Cp()->LeftPanel()->IsVisible() || Global->CtrlObject->Cp()->RightPanel()->IsVisible()))
 		{
@@ -1334,10 +1336,14 @@ bool CommandLine::ProcessOSCommands(string_view const CmdLine, function_ref<void
 		return true;
 	}
 
-	if (IsCommand(L"EXIT"sv, false))
+	if (equal_icase(Command, L"EXIT"sv))
 	{
-		ConsoleActivatior(false);
-		Global->WindowManager->ExitMainLoop(FALSE);
+		int ExitCode = EXIT_SUCCESS;
+		if (!from_string(Arguments, ExitCode))
+			LOGWARNING(L"Error parsing exit arguments: {}"sv, Arguments);
+
+		ConsoleActivatior();
+		Global->WindowManager->ExitMainLoop(FALSE, ExitCode);
 		return true;
 	}
 
@@ -1371,7 +1377,7 @@ bool CommandLine::IntChDir(string_view const CmdLine, bool const ClosePanel, boo
 
 	if (IsAbsolutePath(strExpandedDir))
 	{
-		ReplaceSlashToBackslash(strExpandedDir);
+		path::inplace::normalize_separators(strExpandedDir);
 		SetPanel->SetCurDir(strExpandedDir,true);
 		return true;
 	}
@@ -1382,28 +1388,16 @@ bool CommandLine::IntChDir(string_view const CmdLine, bool const ClosePanel, boo
 		return true;
 	}
 
-	if (FarChDir(strExpandedDir))
+	while (!FarChDir(strExpandedDir))
 	{
-		SetPanel->ChangeDirToCurrent();
-
-		if (!SetPanel->IsVisible())
-			SetPanel->RefreshTitle();
+		if (Silent || !TryParentFolder(strExpandedDir))
+			return false;
 	}
-	else
-	{
-		if (!Silent)
-		{
-			const auto ErrorState = last_error();
 
-			Message(MSG_WARNING, ErrorState,
-				msg(lng::MError),
-				{
-					strExpandedDir
-				},
-				{ lng::MOk });
-		}
-		return false;
-	}
+	SetPanel->ChangeDirToCurrent();
+
+	if (!SetPanel->IsVisible())
+		SetPanel->RefreshTitle();
 
 	return true;
 }

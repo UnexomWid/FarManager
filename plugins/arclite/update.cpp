@@ -38,11 +38,11 @@ private:
     if (time == 0)
       speed = 0;
     else
-      speed = al_round(static_cast<double>(completed) / time * ticks_per_sec());
+      speed = al_round(static_cast<double>(completed) / static_cast<double>(time) * static_cast<double>(ticks_per_sec()));
 
     UInt64 total_time;
     if (completed)
-      total_time = static_cast<UInt64>(static_cast<double>(total) / completed * time);
+      total_time = static_cast<UInt64>(static_cast<double>(total) / static_cast<double>(completed) * static_cast<double>(time));
     else
       total_time = 0;
     if (total_time < time)
@@ -189,6 +189,8 @@ public:
     close();
     File::delete_file_nt(m_file_path);
   }
+
+  using File::copy_ctime_from;
 };
 
 
@@ -809,7 +811,7 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
     static const ExternalCodec defopts { L"", 1,9,0, 1,3,5,7,9, false };
 
     std::wstring method;
-    if (options.arc_type == c_7z)
+    if (options.arc_type == c_7z || options.arc_type == c_zip)
       method = options.method;
     else if (ArcAPI::formats().count(options.arc_type))
       method = ArcAPI::formats().at(options.arc_type).name;
@@ -945,6 +947,13 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
         }
       }
     }
+    else if (options.arc_type == c_zip) {
+      if (!ignore_method) {
+        names.push_back(L"0"); values.push_back(method);
+        ++n_01;
+      }
+      names.push_back(L"x"); values.push_back(level);
+    }
     else if (options.arc_type != c_bzip2 || level != 0) {
       names.push_back(L"x"); values.push_back(level);
     }
@@ -991,6 +1000,35 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
     name_ptrs.reserve(names.size());
     for (unsigned i = 0; i < names.size(); i++) {
       name_ptrs.push_back(names[i].c_str());
+    }
+
+    const auto string_to_integer = [](const std::wstring& str, auto converter, PropVariant& v)
+    {
+      wchar_t* endptr{};
+      const auto str_end = str.data() + str.size();
+
+      const auto value = converter(str.c_str(), &endptr, 10);
+      if (endptr != str_end)
+        return false;
+
+      if (value > std::numeric_limits<UInt32>::max())
+        v = static_cast<UInt64>(value);
+      else
+        v = static_cast<UInt32>(value);
+
+      return true;
+    };
+
+    for (auto& i: values)
+    {
+      if (!i.is_str())
+        continue;
+
+      const auto str = i.get_str();
+      if (str.empty())
+        continue;
+
+      string_to_integer(str, &wcstoull, i) || string_to_integer(str, &wcstoll, i);
     }
 
     CHECK_COM(set_props->SetProperties(name_ptrs.data(), values.data(), static_cast<UInt32>(values.size())));
@@ -1125,16 +1163,16 @@ void Archive::update(const std::wstring& src_dir, const std::vector<std::wstring
   try {
     ComObject<IOutArchive> out_arc;
     CHECK_COM(in_arc->QueryInterface(IID_IOutArchive, reinterpret_cast<void**>(&out_arc)));
-
     set_properties(out_arc, options);
 
     const auto progress = std::make_shared<ArchiveUpdateProgress>(false, arc_path);
-    ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(src_dir, dst_dir, m_num_indices, file_index_map, options, ignore_errors, error_log, progress));
-    ComObject<IOutStream> update_stream(new SimpleUpdateStream(temp_arc_name, progress));
+    ComObject updater(new ArchiveUpdater(src_dir, dst_dir, m_num_indices, file_index_map, options, ignore_errors, error_log, progress));
+    ComObject update_stream(new SimpleUpdateStream(temp_arc_name, progress));
 
     COM_ERROR_CHECK(copy_prologue(update_stream));
-
     COM_ERROR_CHECK(out_arc->UpdateItems(update_stream, new_index, updater));
+    update_stream->copy_ctime_from(arc_path);
+
     close();
     update_stream.Release();
     File::move_file(temp_arc_name, arc_path, MOVEFILE_REPLACE_EXISTING);

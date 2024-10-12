@@ -1,4 +1,5 @@
 NAME = arclite
+VERSION_7Z=24.08
 
 PRECOMPILED_HEADER=headers
 DISABLEAUTODEPS = 1
@@ -27,17 +28,13 @@ SRCS = \
 	update.cpp
 
 ifdef DEBUG_7Z
-ifeq (32,$(DIRBIT))
-7ZDLL = 7z/src/CPP/7zip/Bundles/Format7zF/Debug/7z.dll
+7ZDLL = 7z/src/CPP/7zip/Bundles/Format7zF/Debug/$(DIRBIT)/7z.dll
 else
-7ZDLL = 7z/src/CPP/7zip/Bundles/Format7zF/x64/Debug/7z.dll
-endif
-else
-7ZDLL = 7z/dll/$(DIRBIT)/7z.dll
+7ZDLL = 7z/$(VERSION_7Z)/dll/$(DIRBIT)/7z.dll
 endif
 
 DOCS = \
-	7z/sfx/*.sfx \
+	7z/$(VERSION_7Z)/sfx/*.sfx \
 	arclite.xml \
 	$(7ZDLL) \
 
@@ -46,7 +43,7 @@ include ../makefile_gcc_def_inc
 ifndef BUILD
 
 .PHONY: all
-all: depfile
+all: depfile $(7ZDLL)
 	$(MAKE) -f makefile_gcc $(MK_FLAGS) all BUILD=1 USEDEP=1
 
 .PHONY: depfile
@@ -54,6 +51,10 @@ depfile:
 	$(MKDIR) -p $(OBJDIR)
 	@echo Rebuilding dependencies
 	$(LS) *.cpp *.hpp *.rc | $(GAWK) -f $(FARDIR)/scripts/mkdep.awk -v compiler=gcc - > $(OBJDIR)/$(NAME).dep
+
+$(7ZDLL):
+	@echo Downloading 7-Zip binaries
+	curl -o 7z/7z-$(VERSION_7Z).zip https://raw.githubusercontent.com/FarGroup/thirdparty/master/7z-$(VERSION_7Z).zip && unzip 7z/7z-$(VERSION_7Z).zip -d 7z/$(VERSION_7Z)
 
 clean:
 	$(MAKE) -f makefile_gcc $(MK_FLAGS) clean BUILD=1
@@ -64,7 +65,7 @@ ifdef USEDEP
 include $(OBJDIR)/$(NAME).dep
 endif
 
-CPPFLAGS += -I"$(FARDIR)/common" -Wno-non-virtual-dtor
+CPPFLAGS += -Wno-non-virtual-dtor -Wno-error=pedantic
 
 include ../makefile_gcc_target_inc
 

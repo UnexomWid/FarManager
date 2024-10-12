@@ -42,6 +42,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "farversion.hpp"
 #include "plugapi.hpp"
 #include "message.hpp"
+#include "mix.hpp"
+#include "notification.hpp"
 #include "dirmix.hpp"
 #include "strmix.hpp"
 #include "uuids.far.hpp"
@@ -56,6 +58,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Platform:
 #include "platform.env.hpp"
 #include "platform.fs.hpp"
+#include "platform.process.hpp"
 
 // Common:
 #include "common/enum_tokens.hpp"
@@ -170,7 +173,7 @@ plugin_factory::plugin_module_ptr native_plugin_factory::Create(const string& fi
 	auto Module = std::make_unique<native_plugin_module>(filename);
 	if (!*Module)
 	{
-		const auto ErrorState = last_error();
+		const auto ErrorState = os::last_error();
 
 		Module.reset();
 
@@ -209,10 +212,10 @@ bool native_plugin_factory::IsPlugin(const string& FileName) const
 	if (!ends_with_icase(FileName, L".dll"sv))
 		return false;
 
-	const os::fs::file ModuleFile(FileName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING);
+	const os::fs::file ModuleFile(FileName, FILE_READ_DATA, os::fs::file_share_read, nullptr, OPEN_EXISTING);
 	if (!ModuleFile)
 	{
-		LOGDEBUG(L"create_file({}) {}"sv, FileName, last_error());
+		LOGDEBUG(L"create_file({}) {}"sv, FileName, os::last_error());
 		return false;
 	}
 
@@ -285,7 +288,7 @@ bool native_plugin_factory::IsPlugin(string_view const FileName, std::istream& S
 	IMAGE_SECTION_HEADER Section;
 	bool Found{};
 
-	for ([[maybe_unused]] const auto& i: irange(NtHeaders.FileHeader.NumberOfSections))
+	for ([[maybe_unused]] const auto i: std::views::iota(0uz, NtHeaders.FileHeader.NumberOfSections))
 	{
 		if (io::read(Stream, edit_bytes(Section)) != sizeof(Section))
 		{
@@ -324,7 +327,7 @@ bool native_plugin_factory::IsPlugin(string_view const FileName, std::istream& S
 	}
 
 	std::string Name;
-	for (const auto& i : irange(ExportDirectory.NumberOfNames))
+	for (const auto i: std::views::iota(0uz, ExportDirectory.NumberOfNames))
 	{
 		Stream.seekg(section_address_to_real(ExportDirectory.AddressOfNames) + sizeof(DWORD) * i);
 
@@ -428,8 +431,8 @@ static void ShowMessageAboutIllegalPluginVersion(const string& plg, const Versio
 		{
 			msg(lng::MPlgBadVers),
 			plg,
-			format(msg(lng::MPlgRequired), version_to_string(required)),
-			format(msg(lng::MPlgRequired2), version_to_string(build::version()))
+			far::vformat(msg(lng::MPlgRequired), version_to_string(required)),
+			far::vformat(msg(lng::MPlgRequired2), version_to_string(build::version()))
 		},
 		{ lng::MOk }
 	);
@@ -473,7 +476,7 @@ bool Plugin::SaveToCache()
 
 	const auto SaveItems = [&PlCache, &id](const auto& Setter, const PluginMenuItem& Item)
 	{
-		for (const auto& i: irange(Item.Count))
+		for (const auto i: std::views::iota(0uz, Item.Count))
 		{
 			std::invoke(Setter, PlCache, id, i, Item.Strings[i], Item.Guids[i]);
 		}
@@ -557,6 +560,12 @@ bool Plugin::LoadData()
 	}
 
 	PrepareModulePath(m_strModuleName);
+
+	// Factory can spawn error messages, which in turn can cause redraw events
+	// and load plugins recursively again and again, eventually overflowing the stack.
+	// Expect nothing and you will never be disappointed.
+	WorkFlags.Set(PIWF_DONTLOADAGAIN);
+
 	m_Instance = m_Factory->Create(m_strModuleName);
 	FarChDir(strCurPath);
 
@@ -564,13 +573,9 @@ bool Plugin::LoadData()
 		os::env::set(Drive, strCurPlugDiskPath);
 
 	if (!m_Instance)
-	{
-		//чтоб не пытаться загрузить опять а то ошибка будет постоянно показываться.
-		WorkFlags.Set(PIWF_DONTLOADAGAIN);
 		return false;
-	}
 
-	WorkFlags.Clear(PIWF_CACHED);
+	WorkFlags.Clear(PIWF_DONTLOADAGAIN | PIWF_CACHED);
 
 	if(bPendingRemove)
 	{
@@ -610,11 +615,12 @@ bool Plugin::LoadData()
 
 		if (ok)
 		{
+			SubscribeToSynchroEvents();
 			WorkFlags.Set(PIWF_DATALOADED);
 			return true;
 		}
 	}
-	Unload();
+	Unload(false);
 	//чтоб не пытаться загрузить опять а то ошибка будет постоянно показываться.
 	WorkFlags.Set(PIWF_DONTLOADAGAIN);
 	return false;
@@ -647,7 +653,7 @@ bool Plugin::Load()
 	{
 		if (!bPendingRemove)
 		{
-			Unload();
+			Unload(false);
 		}
 
 		//чтоб не пытаться загрузить опять а то ошибка будет постоянно показываться.
@@ -708,6 +714,7 @@ bool Plugin::LoadFromCache(const os::fs::find_data &FindData)
 		if (PlCache->GetExportState(id, Name.UName))
 			Export = ToPtr(true); // Fake, will be overwritten with the real address later
 	}
+	SubscribeToSynchroEvents();
 
 	WorkFlags.Set(PIWF_CACHED); //too many "cached" flags
 	return true;
@@ -719,16 +726,14 @@ bool Plugin::Unload(bool bExitFAR)
 		return true;
 
 	if (bExitFAR)
-	{
-		ExitInfo Info{ sizeof(Info) };
-		ExitFAR(&Info);
-	}
+		NotifyExit();
 
 	bool Result = true;
 
 	if (!WorkFlags.Check(PIWF_CACHED))
 	{
 		Result = m_Factory->Destroy(m_Instance);
+		LOGDEBUG(L"Unloaded {}"sv, ModuleName());
 		ClearExports();
 	}
 
@@ -738,6 +743,15 @@ bool Plugin::Unload(bool bExitFAR)
 	bPendingRemove = true;
 
 	return Result;
+}
+
+void Plugin::NotifyExit()
+{
+	if (WorkFlags.Check(PIWF_LOADED))
+	{
+		ExitInfo Info{sizeof(Info)};
+		ExitFAR(&Info);
+	}
 }
 
 void Plugin::ClearExports()
@@ -762,13 +776,14 @@ bool Plugin::RemoveDialog(const window_ptr& Dlg)
 
 void Plugin::SubscribeToSynchroEvents()
 {
+	if (!has(iProcessSynchroEvent))
+		return;
+
 	// Already initialised
 	if (m_SynchroListenerCreated)
 		return;
 
-	// Being initialised by another thread
-	if (std::atomic_exchange(&m_SynchroListenerCreated, true))
-		return;
+	m_SynchroListenerCreated = true;
 
 	m_SynchroListener = std::make_unique<listener>(m_Uuid, [this](const std::any& Payload)
 	{
@@ -779,7 +794,7 @@ void Plugin::SubscribeToSynchroEvents()
 	});
 }
 
-bool Plugin::IsPanelPlugin()
+bool Plugin::IsPanelPlugin() const
 {
 	static const int PanelExports[]
 	{
@@ -801,7 +816,7 @@ bool Plugin::IsPanelPlugin()
 		iClosePanel,
 	};
 
-	return std::any_of(CONST_RANGE(PanelExports, i)
+	return std::ranges::any_of(PanelExports, [&](int const i)
 	{
 		return Exports[i] != nullptr;
 	});
@@ -854,7 +869,7 @@ bool Plugin::InitLang(string_view const Path, string_view const Language)
 		PluginLang = std::make_unique<plugin_language>(Path, Language);
 		return true;
 	}
-	catch (const std::exception& e)
+	catch (std::exception const& e)
 	{
 		LOGERROR(L"{}"sv, e);
 		return false;
@@ -1214,12 +1229,12 @@ void Plugin::ExitFAR(ExitInfo *Info)
 	ExecuteFunction(es, Info);
 }
 
-void Plugin::ExecuteFunctionImpl(export_index const ExportId, function_ref<void()> const Callback)
+void Plugin::ExecuteFunctionImpl(export_index const ExportId, function_ref<void()> const Callback, source_location const& Location)
 {
-	const auto HandleFailure = [&]
+	const auto HandleFailure = [&](DWORD const ExceptionCode = EXIT_FAILURE)
 	{
 		if (use_terminate_handler())
-			std::_Exit(EXIT_FAILURE);
+			os::process::terminate_by_user(ExceptionCode);
 
 		m_Factory->Owner()->UnloadPlugin(this, ExportId);
 	};
@@ -1238,7 +1253,7 @@ void Plugin::ExecuteFunctionImpl(export_index const ExportId, function_ref<void(
 
 		const auto HandleException = [&](const auto& Handler, auto&&... ProcArgs)
 		{
-			Handler(FWD(ProcArgs)..., m_Factory->ExportsNames()[ExportId].AName, this)? HandleFailure() : throw;
+			Handler(FWD(ProcArgs)..., this, Location)? HandleFailure() : throw;
 		};
 
 		cpp_try(
@@ -1248,20 +1263,19 @@ void Plugin::ExecuteFunctionImpl(export_index const ExportId, function_ref<void(
 			rethrow_if(GlobalExceptionPtr());
 			m_Factory->ProcessError(m_Factory->ExportsNames()[ExportId].AName);
 		},
-		[&]
+		[&](source_location const&)
 		{
 			HandleException(handle_unknown_exception);
 		},
-		[&](std::exception const& e)
+		[&](std::exception const& e, source_location const&)
 		{
 			HandleException(handle_std_exception, e);
-		});
+		},
+		Location);
 	},
-	[&](DWORD)
-	{
-		HandleFailure();
-	},
-	m_Factory->ExportsNames()[ExportId].AName, this);
+	HandleFailure,
+	this,
+	Location);
 }
 
 class custom_plugin_module final: public i_plugin_module
@@ -1361,9 +1375,9 @@ public:
 			return;
 
 		std::vector<string> MessageLines;
-		const string Summary = concat(Info.Summary, L" ("sv, encoding::utf8::get_chars(Function), L')');
+		const string Summary = concat(Info.Summary, L" ("sv, encoding::ascii::get_chars(Function), L')');
 		const auto Enumerator = enum_tokens(Info.Description, L"\n"sv);
-		std::transform(ALL_CONST_RANGE(Enumerator), std::back_inserter(MessageLines), [](const string_view View) { return string(View); });
+		std::ranges::transform(Enumerator, std::back_inserter(MessageLines), [](const string_view View) { return string(View); });
 		Message(MSG_WARNING | MSG_LEFTALIGN,
 			Summary,
 			MessageLines,
@@ -1394,13 +1408,13 @@ private:
 	public:
 #define DECLARE_IMPORT_FUNCTION(name, ...) os::rtdl::function_pointer<__VA_ARGS__> p ## name{ m_Module, #name }
 
-		DECLARE_IMPORT_FUNCTION(Initialize,            BOOL(WINAPI*)(GlobalInfo* info));
-		DECLARE_IMPORT_FUNCTION(IsPlugin,              BOOL(WINAPI*)(const wchar_t* filename));
-		DECLARE_IMPORT_FUNCTION(CreateInstance,        HANDLE(WINAPI*)(const wchar_t* filename));
-		DECLARE_IMPORT_FUNCTION(GetFunctionAddress,    void*(WINAPI*)(HANDLE Instance, const wchar_t* functionname));
-		DECLARE_IMPORT_FUNCTION(GetError,              BOOL(WINAPI*)(ErrorInfo* info));
-		DECLARE_IMPORT_FUNCTION(DestroyInstance,       BOOL(WINAPI*)(HANDLE Instance));
-		DECLARE_IMPORT_FUNCTION(Free,                  void (WINAPI*)(const ExitInfo* info));
+		DECLARE_IMPORT_FUNCTION(Initialize,            BOOL   WINAPI(GlobalInfo* info));
+		DECLARE_IMPORT_FUNCTION(IsPlugin,              BOOL   WINAPI(const wchar_t* filename));
+		DECLARE_IMPORT_FUNCTION(CreateInstance,        HANDLE WINAPI(const wchar_t* filename));
+		DECLARE_IMPORT_FUNCTION(GetFunctionAddress,    void*  WINAPI(HANDLE Instance, const wchar_t* functionname));
+		DECLARE_IMPORT_FUNCTION(GetError,              BOOL   WINAPI(ErrorInfo* info));
+		DECLARE_IMPORT_FUNCTION(DestroyInstance,       BOOL   WINAPI(HANDLE Instance));
+		DECLARE_IMPORT_FUNCTION(Free,                  void   WINAPI(const ExitInfo* info));
 
 #undef DECLARE_IMPORT_FUNCTION
 

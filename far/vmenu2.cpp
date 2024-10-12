@@ -105,15 +105,15 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 				COL_MENUSELECTEDGRAYTEXT,                  // выбранный "серый"
 			};
 
-			const auto colors = static_cast<FarDialogItemColors*>(Param2);
-			std::transform(MenuColors, MenuColors + std::min(colors->ColorsCount, std::size(MenuColors)), colors->Colors, &colors::PaletteColorToFarColor);
+			const auto& colors = *static_cast<FarDialogItemColors const*>(Param2);
+			std::ranges::transform(MenuColors | std::views::take(std::min(colors.ColorsCount, std::size(MenuColors))), colors.Colors, &colors::PaletteColorToFarColor);
 			return true;
 		}
 
 	case DN_CLOSE:
 		if(!ForceClosing && !Param1 && GetItemFlags() & (LIF_GRAYED|LIF_DISABLE))
 			return false;
-		if(Call(Msg, reinterpret_cast<void*>(Param1 < 0? Param1 : GetSelectPos())))
+		if(Call(Msg, std::bit_cast<void*>(Param1 < 0? Param1 : GetSelectPos())))
 			return false;
 		break;
 
@@ -152,9 +152,6 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 		break;
 
 	case DN_LISTCHANGE:
-		if (Dlg->CheckDialogMode(DMODE_ISMENU))
-			break;
-
 		if(!cancel)
 		{
 			if(Call(Msg, Param2))
@@ -172,11 +169,6 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 			else
 				Resize();
 		}
-		break;
-
-	default:
-		if(Global->CloseFARMenu)
-			ProcessKey(Manager::Key(KEY_ESC));
 		break;
 	}
 	return Dlg->DefProc(Msg, Param1, Param2);
@@ -244,13 +236,12 @@ void VMenu2::Resize(bool force)
 			Y1-=1;
 	}
 
-	int width = static_cast<int>(ListBox().MaxItemLength()) + (m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 2 : 6) + 3;
-	if(m_X2>0)
-		width=m_X2-X1+1;
-
-	if(width>ScrX+1)
-		width=ScrX+1;
-
+	const auto width = std::min(
+		ScrX + 1,
+		m_X2 > 0?
+			m_X2 - X1 + 1 :
+			static_cast<int>(ListBox().GetNaturalMenuWidth() + (m_BoxType == box_type::full? 4 : 0))
+	);
 
 	int height=GetShowItemCount();
 	if(MaxHeight && height>MaxHeight)
@@ -356,7 +347,7 @@ VMenu2::VMenu2(private_tag, int MaxHeight):
 {
 }
 
-vmenu2_ptr VMenu2::create(const string& Title, span<const menu_item> const Data, int MaxHeight, DWORD Flags)
+vmenu2_ptr VMenu2::create(const string& Title, std::span<const menu_item> const Data, int MaxHeight, DWORD Flags)
 {
 	auto VMenu2Ptr = std::make_shared<VMenu2>(private_tag(), MaxHeight);
 
@@ -370,7 +361,7 @@ vmenu2_ptr VMenu2::create(const string& Title, span<const menu_item> const Data,
 
 	std::vector<FarListItem> fli;
 	fli.reserve(Data.size());
-	std::transform(ALL_CONST_RANGE(Data), std::back_inserter(fli), [](const auto& i) { return FarListItem{ i.Flags, i.Name.c_str() }; });
+	std::ranges::transform(Data, std::back_inserter(fli), [](const auto& i) { return FarListItem{ i.Flags, i.Name.c_str() }; });
 
 	FarList fl{ sizeof(fl), fli.size(), fli.data() };
 
@@ -422,7 +413,7 @@ void VMenu2::SetMenuFlags(DWORD Flags)
 	if (Flags&VMENU_NOMERGEBORDER)
 		fdi.Flags|=DIF_LISTNOMERGEBORDER;
 
-	ListBox().SetMenuFlags(Flags & (VMENU_REVERSEHIGHLIGHT | VMENU_LISTSINGLEBOX));
+	ListBox().SetMenuFlags(Flags & (VMENU_REVERSEHIGHLIGHT | VMENU_LISTSINGLEBOX | VMENU_ENABLEALIGNANNOTATIONS));
 
 	SendMessage(DM_SETDLGITEMSHORT, 0, &fdi);
 }
@@ -580,6 +571,7 @@ intptr_t VMenu2::RunEx(const std::function<int(int Msg, void *param)>& fn)
 	Resize(true);
 
 	Process();
+	mfn = {};
 
 	return GetExitCode();
 }
@@ -669,34 +661,21 @@ int VMenu2::GetTypeAndName(string &strType, string &strName)
 	return windowtype_menu;
 }
 
-static auto ClickHandler(VMenu2* Menu, const IntOption& MenuClick)
-{
-	switch (MenuClick)
-	{
-	case  VMENUCLICK_APPLY:
-		return Menu->ProcessKey(Manager::Key(KEY_ENTER));
-
-	case VMENUCLICK_CANCEL:
-		return Menu->ProcessKey(Manager::Key(KEY_ESC));
-
-	case VMENUCLICK_IGNORE:
-	default:
-		return true;
-	}
-}
-
 bool VMenu2::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 {
-	if (!IsMoving())
+	if (!IsMoving() && IsMouseButtonEvent(MouseEvent->dwEventFlags) && !m_Where.contains(MouseEvent->dwMousePosition))
 	{
-		if (!m_Where.contains(MouseEvent->dwMousePosition))
+		INPUT_RECORD mouse{ MOUSE_EVENT };
+		mouse.Event.MouseEvent = *MouseEvent;
+		if (!Call(DN_INPUT, &mouse))
 		{
-			if (MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED)
-				return ClickHandler(this, Global->Opt->VMenu.LBtnClick);
-			else if (MouseEvent->dwButtonState & FROM_LEFT_2ND_BUTTON_PRESSED)
-				return ClickHandler(this, Global->Opt->VMenu.MBtnClick);
-			else if (MouseEvent->dwButtonState & RIGHTMOST_BUTTON_PRESSED)
-				return ClickHandler(this, Global->Opt->VMenu.RBtnClick);
+			const auto NewButtonState = mouse.Event.MouseEvent.dwButtonState & ~IntKeyState.PrevMouseButtonState;
+			if (NewButtonState & FROM_LEFT_1ST_BUTTON_PRESSED)
+				return VMenu::ClickHandler(this, Global->Opt->VMenu.LBtnClick);
+			else if (NewButtonState & FROM_LEFT_2ND_BUTTON_PRESSED)
+				return VMenu::ClickHandler(this, Global->Opt->VMenu.MBtnClick);
+			else if (NewButtonState & RIGHTMOST_BUTTON_PRESSED)
+				return VMenu::ClickHandler(this, Global->Opt->VMenu.RBtnClick);
 		}
 	}
 	return Dialog::ProcessMouse(MouseEvent);

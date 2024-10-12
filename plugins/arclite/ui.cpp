@@ -154,15 +154,17 @@ UInt64 ProgressMonitor::ticks_per_sec() {
 static const wchar_t** get_suffixes(int start) {
   static const int msg_ids[1 + 5 + 5] =
   { MSG_LANG
-  , 0,                  MSG_SUFFIX_SIZE_KB,  MSG_SUFFIX_SIZE_MB,  MSG_SUFFIX_SIZE_GB,  MSG_SUFFIX_SIZE_TB
+  , -1,                 MSG_SUFFIX_SIZE_KB,  MSG_SUFFIX_SIZE_MB,  MSG_SUFFIX_SIZE_GB,  MSG_SUFFIX_SIZE_TB
   , MSG_SUFFIX_SPEED_B, MSG_SUFFIX_SPEED_KB, MSG_SUFFIX_SPEED_MB, MSG_SUFFIX_SPEED_GB, MSG_SUFFIX_SPEED_TB
   };
-  static std::wstring       msg_texts[1 + 5 + 5];
+  static std::wstring  msg_texts[1 + 5 + 5];
   static const wchar_t* suffixes[1 + 5 + 5];
 
   if (Far::get_msg(msg_ids[0]) != msg_texts[0]) {
-    for (int i = 0; i < 1 + 5 + 5; ++i)
-      suffixes[i] = (msg_texts[i] = msg_ids[i] ? Far::get_msg(msg_ids[i]) : std::wstring()).c_str();
+    for (int i = 0; i < 1 + 5 + 5; ++i) {
+      auto msg_id = msg_ids[i];
+      suffixes[i] = (msg_texts[i] = msg_id >= 0 ? Far::get_msg(msg_id) : std::wstring()).c_str();
+    }
   }
 
   return suffixes + start;
@@ -496,7 +498,7 @@ void retry_or_ignore_error(const Error& error, bool& ignore, bool& ignore_errors
       ignore_all_id = button_cnt;
       button_cnt++;
     }
-    st << Far::get_msg(MSG_BUTTON_CANCEL) << L'\n';
+    st << Far::get_msg(MSG_BUTTON_CANCEL);
     button_cnt++;
     ProgressSuspend ps(progress);
     auto id = Far::message(c_retry_ignore_dialog_guid, st.str(), button_cnt, FMSG_WARNING);
@@ -589,7 +591,7 @@ bool operator==(const ProfileOptions& o1, const ProfileOptions& o2) {
   bool is_zip = o1.arc_type == c_zip;
   bool is_compressed = o1.level != 0;
 
-  if (is_7z) {
+  if (is_7z || is_zip) {
     if (is_compressed) {
       if (o1.method != o2.method)
         return false;
@@ -668,6 +670,8 @@ const CompressionMethod c_methods[] = {
   { MSG_COMPRESSION_METHOD_LZMA, c_method_lzma },
   { MSG_COMPRESSION_METHOD_LZMA2, c_method_lzma2 },
   { MSG_COMPRESSION_METHOD_PPMD, c_method_ppmd },
+  { MSG_COMPRESSION_METHOD_DEFLATE, c_method_deflate },
+  { MSG_COMPRESSION_METHOD_DEFLATE64, c_method_deflate64 },
 };
 
 static bool is_SWFu(const std::wstring& fname)
@@ -851,7 +855,7 @@ private:
     update_level_list();
     bool is_compressed = get_list_pos(level_ctrl_id) != 0;
     for (int i = method_ctrl_id - 1; i <= method_ctrl_id; i++) {
-      enable(i, is_7z & is_compressed);
+      enable(i, (is_7z || is_zip) && is_compressed);
     }
     enable(solid_ctrl_id, is_7z && is_compressed);
     enable(encrypt_ctrl_id, is_7z || is_zip);
@@ -935,7 +939,7 @@ private:
     bool is_compressed = options.level != 0;
 
     if (is_compressed) {
-      if (is_7z) {
+      if (is_7z || is_zip) {
         options.method.clear();
         unsigned method_sel = get_list_pos(method_ctrl_id);
         const auto& codecs = ArcAPI::codecs();
@@ -1075,6 +1079,7 @@ private:
   void populate_profile_list() {
     DisableEvents de(*this);
     std::vector<FarListItem> fl_items;
+    fl_items.reserve(profiles.size() + 1);
     FarListItem fl_item{};
     for (unsigned i = 0; i < profiles.size(); i++) {
       fl_item.Text = profiles[i].name.c_str();
@@ -1108,8 +1113,18 @@ private:
     }
     else if (new_arc && msg == DN_BTNCLICK && !main_formats.empty() && param1 >= main_formats_ctrl_id && param1 < main_formats_ctrl_id + static_cast<int>(main_formats.size())) {
       if (param2) {
+        ArcType prev_arc_type = arc_type;
         arc_type = main_formats[param1 - main_formats_ctrl_id];
         arc_levels('g');
+        if (arc_type != prev_arc_type) {
+          unsigned method_sel = get_list_pos(method_ctrl_id);
+          if (method_sel == 3 && arc_type == c_7z) {
+            set_list_pos(method_ctrl_id, 0); // Deflate -> LZMA
+          }
+          else if (method_sel == 0 && arc_type == c_zip) {
+            set_list_pos(method_ctrl_id, 3); // LZMA -> Deflate
+          }
+        }
         set_control_state();
       }
     }
@@ -1278,7 +1293,7 @@ public:
         old_ext = ArcAPI::formats().at(m_options.arc_type).default_extension();
 
       std::vector<std::wstring> profile_names;
-      profile_names.reserve(profiles.size());
+      profile_names.reserve(profiles.size() + 1);
       unsigned profile_idx = static_cast<unsigned>(profiles.size());
       std::for_each(profiles.begin(), profiles.end(), [&] (const UpdateProfile& profile) {
         profile_names.push_back(profile.name);
@@ -1343,6 +1358,7 @@ public:
           return _wcsicmp(a_format.name.c_str(), b_format.name.c_str()) < 0;
       });
       std::vector<std::wstring> other_format_names;
+      other_format_names.reserve(other_formats.size());
       unsigned other_format_index = 0;
       bool found = false;
       for (const auto& t : other_formats) {
@@ -1376,9 +1392,11 @@ public:
     label(Far::get_msg(MSG_UPDATE_DLG_METHOD));
     std::wstring method = m_options.method.empty() && m_options.arc_type == c_7z? c_methods[0].value : m_options.method;
     std::vector<std::wstring> method_names;
+    const auto sizeMethods = ARRAYSIZE(c_methods) + ArcAPI::Count7zCodecs();
+    method_names.reserve(sizeMethods);
     const auto& codecs = ArcAPI::codecs();
     unsigned method_sel = 0;
-    for (unsigned i = 0; i < ARRAYSIZE(c_methods) + ArcAPI::Count7zCodecs(); ++i) {
+    for (unsigned i = 0; i < sizeMethods; ++i) {
       std::wstring method_name = i < ARRAYSIZE(c_methods) ? c_methods[i].value : codecs[i - ARRAYSIZE(c_methods)].Name;
       if (method == method_name)
         method_sel = i;

@@ -49,8 +49,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "global.hpp"
 #include "stddlg.hpp"
 #include "log.hpp"
+#include "colormix.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.concurrency.hpp"
 #include "platform.debug.hpp"
 #include "platform.fs.hpp"
@@ -67,6 +69,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "format.hpp"
 #include "tinyxml.hpp"
 
+#include <share.h>
+
 //----------------------------------------------------------------------------
 
 static const auto XmlDocumentRootName = "farconfig";
@@ -76,12 +80,12 @@ class representation_source
 public:
 	explicit representation_source(string_view const File)
 	{
-		const file_ptr XmlFile(_wfsopen(NTPath(File).c_str(), L"rb", _SH_DENYWR));
+		const file_ptr XmlFile(_wfsopen(nt_path(File).c_str(), L"rb", _SH_DENYWR));
 		if (!XmlFile)
-			throw MAKE_FAR_KNOWN_EXCEPTION(format(FSTR(L"Error opening file \"{}\": {}"sv), File, os::format_errno(errno)));
+			throw far_known_exception(far::format(L"Error opening file \"{}\": {}"sv, File, os::format_errno(errno)));
 
 		if (const auto LoadResult = m_Document.LoadFile(XmlFile.get()); LoadResult != tinyxml::XML_SUCCESS)
-			throw MAKE_FAR_KNOWN_EXCEPTION(format(FSTR(L"Error loading document from \"{}\": {}"sv), File, encoding::utf8::get_chars(m_Document.ErrorIDToName(LoadResult))));
+			throw far_known_exception(far::format(L"Error loading document from \"{}\": {}"sv, File, encoding::utf8::get_chars(m_Document.ErrorIDToName(LoadResult))));
 
 		const auto root = m_Document.FirstChildElement(XmlDocumentRootName);
 		SetRoot(root);
@@ -112,7 +116,7 @@ static auto& CreateChild(tinyxml::XMLElement& Parent, const char* Name)
 template<typename T>
 static void SetAttribute(tinyxml::XMLElement& Element, const char* Name, T const& Value)
 {
-	if constexpr (std::is_convertible_v<T, std::string_view>)
+	if constexpr (std::convertible_to<T, std::string_view>)
 		Element.SetAttribute(Name, null_terminated_t<char>(Value).c_str());
 	else
 		Element.SetAttribute(Name, Value);
@@ -136,12 +140,12 @@ public:
 
 	void Save(string_view const File)
 	{
-		const file_ptr XmlFile(_wfsopen(NTPath(File).c_str(), L"w", _SH_DENYWR));
+		const file_ptr XmlFile(_wfsopen(nt_path(File).c_str(), L"w", _SH_DENYWR));
 		if (!XmlFile)
-			throw MAKE_FAR_KNOWN_EXCEPTION(format(FSTR(L"Error opening file \"{}\": {}"sv), File, os::format_errno(errno)));
+			throw far_known_exception(far::format(L"Error opening file \"{}\": {}"sv, File, os::format_errno(errno)));
 
 		if (const auto SaveResult = m_Document.SaveFile(XmlFile.get()); SaveResult != tinyxml::XML_SUCCESS)
-			throw MAKE_FAR_KNOWN_EXCEPTION(format(FSTR(L"Error saving document to \"{}\": {}"sv), File, encoding::utf8::get_chars(m_Document.ErrorIDToName(SaveResult))));
+			throw far_known_exception(far::format(L"Error saving document to \"{}\": {}"sv, File, encoding::utf8::get_chars(m_Document.ErrorIDToName(SaveResult))));
 	}
 
 private:
@@ -216,52 +220,47 @@ private:
 	const tinyxml::XMLNode* m_base;
 };
 
-static void serialise_integer(tinyxml::XMLElement& e, long long const Value)
+void serialise_integer(tinyxml::XMLElement& e, long long const Value)
 {
 	SetAttribute(e, "type", "qword"sv);
 	SetAttribute(e, "value", encoding::utf8::get_bytes(to_hex_wstring(Value)));
 }
 
-static void serialise_string(tinyxml::XMLElement& e, std::string const& Value)
+void serialise_string(tinyxml::XMLElement& e, std::string const& Value)
 {
 	SetAttribute(e, "type", "text"sv);
 	SetAttribute(e, "value", Value);
 }
 
-static void serialise_blob(tinyxml::XMLElement& e, bytes_view const Value)
+void serialise_blob(tinyxml::XMLElement& e, bytes_view const Value)
 {
 	SetAttribute(e, "type", "base64"sv);
 	SetAttribute(e, "value", base64::encode(Value));
 }
 
-template<typename callable>
-static bool deserialise_value(char const* Type, char const* Value, callable const& Setter)
+bool deserialise_value(std::string_view const Type, char const* Value, auto const& Setter)
 {
-	if (!strcmp(Type, "qword"))
+	if (Type == "qword"sv)
 	{
-		if (Value)
-			Setter(strtoull(Value, nullptr, 16));
+		Setter(strtoull(Value, nullptr, 16));
 		return true;
 	}
 
-	if (!strcmp(Type, "text"))
+	if (Type == "text"sv)
 	{
-		if (Value)
-			Setter(encoding::utf8::get_chars(Value));
+		Setter(encoding::utf8::get_chars(Value));
 		return true;
 	}
 
-	if (!strcmp(Type, "base64"))
+	if (Type == "base64"sv)
 	{
-		if (Value)
-			Setter(base64::decode(Value));
+		Setter(base64::decode(Value));
 		return true;
 	}
 
-	if (!strcmp(Type, "hex"))
+	if (Type == "hex"sv)
 	{
-		if (Value)
-			Setter(HexStringToBlob(encoding::utf8::get_chars(Value)));
+		Setter(HexStringToBlob(encoding::utf8::get_chars(Value)));
 		return true;
 	}
 
@@ -291,8 +290,7 @@ int sqlite_busy_handler(void* Param, int Retries) noexcept
 class sqlite_boilerplate : public SQLiteDb
 {
 protected:
-	template<typename... args>
-	explicit sqlite_boilerplate(args&&... Args) :
+	explicit sqlite_boilerplate(auto&&... Args) :
 		SQLiteDb(sqlite_busy_handler, FWD(Args)...)
 	{
 	}
@@ -309,14 +307,14 @@ protected:
 private:
 	static void Initialise(const db_initialiser& Db)
 	{
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS general_config(key TEXT NOT NULL, name TEXT NOT NULL, value BLOB, PRIMARY KEY (key, name));"sv,
 		};
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtSetValue,              "REPLACE INTO general_config VALUES (?1,?2,?3);"sv },
 			{ stmtGetValue,              "SELECT value FROM general_config WHERE key=?1 AND name=?2;"sv },
@@ -424,11 +422,19 @@ private:
 		for(const auto& e: xml_enum(Representation.Root().FirstChildElement(GetKeyName()), "setting"))
 		{
 			const auto key = e.Attribute("key");
-			const auto name = e.Attribute("name");
-			const auto type = e.Attribute("type");
-			const auto value = e.Attribute("value");
+			if (!key)
+				continue;
 
-			if (!key || !name || !type || !value)
+			const auto name = e.Attribute("name");
+			if (!name)
+				continue;
+
+			const auto type = e.Attribute("type");
+			if (!type)
+				continue;
+
+			const auto value = e.Attribute("value");
+			if (!value)
 				continue;
 
 			const auto Key = encoding::utf8::get_chars(key);
@@ -439,8 +445,8 @@ private:
 
 	virtual const char* GetKeyName() const = 0;
 
-	template<column_type TypeId, class getter_t, class T>
-	bool GetValueT(const string_view Key, const string_view Name, T& Value, const getter_t Getter) const
+	template<column_type TypeId>
+	bool GetValueT(const string_view Key, const string_view Name, auto& Value, const auto Getter) const
 	{
 		const auto Stmt = AutoStatement(stmtGetValue);
 		if (!Stmt->Bind(Key, Name).Step() || Stmt->GetColType(0) != TypeId)
@@ -450,14 +456,12 @@ private:
 		return true;
 	}
 
-	template<class T>
-	void SetValueT(const string_view Key, const string_view Name, const T Value)
+	void SetValueT(const string_view Key, const string_view Name, const auto Value)
 	{
 		ExecuteStatement(stmtSetValue, Key, Name, Value);
 	}
 
-	template<class T, class getter_t>
-	bool EnumValuesT(const string_view Key, bool Reset, string& Name, T& Value, const getter_t Getter) const
+	bool EnumValuesT(const string_view Key, bool Reset, string& Name, auto& Value, const auto Getter) const
 	{
 		auto Stmt = EnumValuesStmt();
 
@@ -535,7 +539,7 @@ private:
 
 		Db.add_numeric_collation();
 
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS table_keys(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT, FOREIGN KEY(parent_id) REFERENCES table_keys(id) ON UPDATE CASCADE ON DELETE CASCADE, UNIQUE (parent_id,name));"sv,
 			"CREATE TABLE IF NOT EXISTS table_values(key_id INTEGER NOT NULL, name TEXT NOT NULL, value BLOB, FOREIGN KEY(key_id) REFERENCES table_keys(id) ON UPDATE CASCADE ON DELETE CASCADE, PRIMARY KEY (key_id, name), CHECK (key_id <> 0));"sv,
@@ -545,7 +549,7 @@ private:
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtCreateKey,             "INSERT OR IGNORE INTO table_keys VALUES (NULL,?1,?2,NULL);"sv },
 			{ stmtFindKey,               "SELECT id FROM table_keys WHERE parent_id=?1 AND name=?2 AND id<>0;"sv },
@@ -781,11 +785,14 @@ private:
 		for (const auto& e: xml_enum(key, "value"))
 		{
 			const auto name = e.Attribute("name");
-			const auto type = e.Attribute("type");
-			const auto value = e.Attribute("value");
-
-			if (!name || !type)
+			if (!name)
 				continue;
+
+			const auto type = e.Attribute("type");
+			if (!type)
+				continue;
+
+			const auto value = e.Attribute("value");
 
 			const auto Name = encoding::utf8::get_chars(name);
 
@@ -802,8 +809,7 @@ private:
 		}
 	}
 
-	template<class T, class getter_t>
-	bool GetValueT(const key& Root, const string_view Name, T& Value, const getter_t Getter) const
+	bool GetValueT(const key& Root, const string_view Name, auto& Value, const auto Getter) const
 	{
 		const auto Stmt = AutoStatement(stmtGetValue);
 		if (!Stmt->Bind(Root.get(), Name).Step())
@@ -813,8 +819,7 @@ private:
 		return true;
 	}
 
-	template<class T>
-	void SetValueT(const key& Root, const string_view Name, const T& Value)
+	void SetValueT(const key& Root, const string_view Name, const auto& Value)
 	{
 		ExecuteStatement(stmtSetValue, Root.get(), Name, Value);
 	}
@@ -838,19 +843,57 @@ private:
 	};
 };
 
-static const std::pair<FARCOLORFLAGS, string_view> ColorFlagNames[]
+const std::pair<FARCOLORFLAGS, string_view> LegacyColorFlagNames[]
 {
-	{ FCF_FG_4BIT,         L"fg4bit"sv       },
-	{ FCF_BG_4BIT,         L"bg4bit"sv       },
-	{ FCF_FG_BOLD,         L"bold"sv         },
-	{ FCF_FG_ITALIC,       L"italic"sv       },
-	{ FCF_FG_UNDERLINE,    L"underline"sv    },
-	{ FCF_FG_UNDERLINE2,   L"underline2"sv   },
-	{ FCF_FG_OVERLINE,     L"overline"sv     },
-	{ FCF_FG_STRIKEOUT,    L"strikeout"sv    },
-	{ FCF_FG_FAINT,        L"faint"sv        },
-	{ FCF_FG_BLINK,        L"blink"sv        },
+	{ FCF_FG_INDEX, L"fg4bit"sv },
+	{ FCF_BG_INDEX, L"bg4bit"sv },
 };
+
+void color_to_xml(bytes_view const Blob, tinyxml::XMLElement& e)
+{
+	const auto process_color = [&](const char* const Name, COLORREF const Color)
+	{
+		if (Color)
+			SetAttribute(e, Name, encoding::utf8::get_bytes(to_hex_wstring(Color)));
+	};
+
+	FarColor Color;
+	if (!deserialise(Blob, Color))
+		return;
+
+	process_color("background", Color.BackgroundColor);
+	process_color("foreground", Color.ForegroundColor);
+	process_color("underline", Color.UnderlineColor);
+
+	if (Color.Flags)
+	{
+		if (const auto StrFlags = encoding::utf8::get_bytes(colors::ColorFlagsToString(Color.Flags)); !StrFlags.empty())
+			SetAttribute(e, "flags", StrFlags);
+	}
+}
+
+FarColor color_from_xml(tinyxml::XMLElement const& e)
+{
+	const auto process_color = [&](const char* const Name, COLORREF& Color)
+	{
+		if (const auto Value = e.Attribute(Name))
+			Color = std::strtoul(Value, nullptr, 16);
+	};
+
+	FarColor Color{};
+
+	process_color("background", Color.BackgroundColor);
+	process_color("foreground", Color.ForegroundColor);
+	process_color("underline", Color.UnderlineColor);
+
+	if (const auto flags = e.Attribute("flags"))
+	{
+		const auto FlagsStr = encoding::utf8::get_chars(flags);
+		Color.Flags = colors::ColorStringToFlags(FlagsStr) | StringToFlags(FlagsStr, LegacyColorFlagNames);
+	}
+
+	return Color;
+}
 
 class HighlightHierarchicalConfigDb final: public HierarchicalConfigDb
 {
@@ -874,15 +917,9 @@ private:
 
 		if (contains(ColorKeys, Name))
 		{
-			FarColor Color;
-			if (deserialise(Blob, Color))
-			{
-				SetAttribute(e, "type", "color"sv);
-				SetAttribute(e, "background", encoding::utf8::get_bytes(to_hex_wstring(Color.BackgroundColor)));
-				SetAttribute(e, "foreground", encoding::utf8::get_bytes(to_hex_wstring(Color.ForegroundColor)));
-				SetAttribute(e, "flags", encoding::utf8::get_bytes(FlagsToString(Color.Flags, ColorFlagNames)));
-				return;
-			}
+			SetAttribute(e, "type", "color"sv);
+			color_to_xml(Blob, e);
+			return;
 		}
 
 		return HierarchicalConfigDb::SerializeBlob(Name, Blob, e);
@@ -891,18 +928,7 @@ private:
 	bytes DeserializeBlob(const char* Type, const char* Value, const tinyxml::XMLElement& e) const override
 	{
 		if(Type == "color"sv)
-		{
-			FarColor Color{};
-
-			if (const auto background = e.Attribute("background"))
-				Color.BackgroundColor = std::strtoul(background, nullptr, 16);
-			if (const auto foreground = e.Attribute("foreground"))
-				Color.ForegroundColor = std::strtoul(foreground, nullptr, 16);
-			if (const auto flags = e.Attribute("flags"))
-				Color.Flags = StringToFlags(encoding::utf8::get_chars(flags), ColorFlagNames);
-
-			return bytes(view_bytes(Color));
-		}
+			return bytes(view_bytes(color_from_xml(e)));
 
 		return HierarchicalConfigDb::DeserializeBlob(Type, Value, e);
 	}
@@ -919,14 +945,16 @@ public:
 private:
 	static void Initialise(const db_initialiser& Db)
 	{
-		static const std::string_view Schema[]
+		Db.add_numeric_collation();
+
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS colors(name TEXT NOT NULL PRIMARY KEY, value BLOB);"sv,
 		};
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtSetValue,              "REPLACE INTO colors VALUES (?1,?2);"sv },
 			{ stmtGetValue,              "SELECT value FROM colors WHERE name=?1;"sv },
@@ -954,19 +982,13 @@ private:
 	{
 		auto& root = CreateChild(Representation.Root(), "colors");
 
-		const auto stmtEnumAllValues = create_stmt("SELECT name, value FROM colors ORDER BY name;"sv);
+		const auto stmtEnumAllValues = create_stmt("SELECT name, value FROM colors ORDER BY name COLLATE numeric;"sv);
 
 		while (stmtEnumAllValues.Step())
 		{
 			auto& e = CreateChild(root, "object");
-
 			SetAttribute(e, "name", stmtEnumAllValues.GetColTextUTF8(0));
-			if (FarColor Color; deserialise(stmtEnumAllValues.GetColBlob(1), Color))
-			{
-				SetAttribute(e, "background", encoding::utf8::get_bytes(to_hex_wstring(Color.BackgroundColor)));
-				SetAttribute(e, "foreground", encoding::utf8::get_bytes(to_hex_wstring(Color.ForegroundColor)));
-				SetAttribute(e, "flags", encoding::utf8::get_bytes(FlagsToString(Color.Flags, ColorFlagNames)));
-			}
+			color_to_xml(stmtEnumAllValues.GetColBlob(1), e);
 		}
 	}
 
@@ -976,21 +998,14 @@ private:
 		for (const auto& e: xml_enum(Representation.Root().FirstChildElement("colors"), "object"))
 		{
 			const auto name = e.Attribute("name");
-			const auto background = e.Attribute("background");
-			const auto foreground = e.Attribute("foreground");
-			const auto flags = e.Attribute("flags");
 
 			if (!name)
 				continue;
 
 			const auto Name = encoding::utf8::get_chars(name);
 
-			if(background && foreground && flags)
+			if (const auto Color = color_from_xml(e); Color != FarColor{})
 			{
-				FarColor Color{};
-				Color.BackgroundColor = std::strtoul(background, nullptr, 16);
-				Color.ForegroundColor = std::strtoul(foreground, nullptr, 16);
-				Color.Flags = StringToFlags(encoding::utf8::get_chars(flags), ColorFlagNames);
 				SetValue(Name, Color);
 			}
 			else
@@ -1023,7 +1038,7 @@ private:
 	{
 		Db.EnableForeignKeysConstraints();
 
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS filetypes(id INTEGER PRIMARY KEY, weight INTEGER NOT NULL, mask TEXT, description TEXT);"sv,
 			"CREATE TABLE IF NOT EXISTS commands(ft_id INTEGER NOT NULL, type INTEGER NOT NULL, enabled INTEGER NOT NULL, command TEXT, FOREIGN KEY(ft_id) REFERENCES filetypes(id) ON UPDATE CASCADE ON DELETE CASCADE, PRIMARY KEY (ft_id, type));"sv,
@@ -1031,7 +1046,7 @@ private:
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtReorder,               "UPDATE filetypes SET weight=weight+1 WHERE weight>(CASE ?1 WHEN 0 THEN 0 ELSE (SELECT weight FROM filetypes WHERE id=?1) END);"sv },
 			{ stmtAddType,               "INSERT INTO filetypes VALUES (NULL,(CASE ?1 WHEN 0 THEN 1 ELSE (SELECT weight FROM filetypes WHERE id=?1)+1 END),?2,?3);"sv },
@@ -1284,7 +1299,7 @@ private:
 		Db.SetWALJournalingMode();
 		Db.EnableForeignKeysConstraints();
 
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS cachename(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);"sv,
 			"CREATE TABLE IF NOT EXISTS preload(cid INTEGER NOT NULL PRIMARY KEY, enabled INTEGER NOT NULL, FOREIGN KEY(cid) REFERENCES cachename(id) ON UPDATE CASCADE ON DELETE CASCADE);"sv,
@@ -1303,7 +1318,7 @@ private:
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtCreateCache,           "INSERT INTO cachename VALUES (NULL,?1);"sv },
 			{ stmtFindCacheName,         "SELECT id FROM cachename WHERE name=?1;"sv },
@@ -1615,14 +1630,14 @@ public:
 private:
 	static void Initialise(const db_initialiser& Db)
 	{
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			"CREATE TABLE IF NOT EXISTS pluginhotkeys(pluginkey TEXT NOT NULL, menuguid TEXT NOT NULL, type INTEGER NOT NULL, hotkey TEXT, PRIMARY KEY(pluginkey, menuguid, type));"sv,
 		};
 
 		Db.Exec(Schema);
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtGetHotkey,             "SELECT hotkey FROM pluginhotkeys WHERE pluginkey=?1 AND menuguid=?2 AND type=?3;"sv },
 			{ stmtSetHotkey,             "REPLACE INTO pluginhotkeys VALUES (?1,?2,?3,?4);"sv },
@@ -1730,11 +1745,13 @@ private:
 						DelHotkey(Key, *Uuid, Type);
 				};
 
-				if (!strcmp(stype, "drive"))
+				std::string_view const TypeStr(stype);
+
+				if (TypeStr == "drive"sv)
 					ProcessHotkey(hotkey_type::drive_menu);
-				else if (!strcmp(stype, "config"))
+				else if (TypeStr == "config"sv)
 					ProcessHotkey(hotkey_type::config_menu);
-				else if (!strcmp(stype, "plugins"))
+				else if (TypeStr == "plugins"sv)
 					ProcessHotkey(hotkey_type::plugins_menu);
 			}
 
@@ -1771,7 +1788,7 @@ private:
 	os::event AsyncDeleteAddDone{os::event::type::manual, os::event::state::signaled};
 	os::event AsyncCommitDone{os::event::type::manual, os::event::state::signaled};
 	os::event AsyncWork{os::event::type::automatic, os::event::state::nonsignaled};
-	os::thread WorkThread{os::thread::mode::join, &HistoryConfigCustom::ThreadProc, this};
+	[[maybe_unused]] os::thread WorkThread{&HistoryConfigCustom::ThreadProc, this};
 
 	struct AsyncWorkItem
 	{
@@ -1892,7 +1909,7 @@ private:
 
 		Db.add_nocase_collation();
 
-		static const std::string_view Schema[]
+		static constexpr std::string_view Schema[]
 		{
 			//command,view,edit,folder,dialog history
 			"CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY, kind INTEGER NOT NULL, key TEXT NOT NULL, type INTEGER NOT NULL, lock INTEGER NOT NULL, name TEXT NOT NULL, time INTEGER NOT NULL, guid TEXT NOT NULL, file TEXT NOT NULL, data TEXT NOT NULL);"sv,
@@ -1916,7 +1933,7 @@ private:
 		// Must be after reindex
 		Db.EnableForeignKeysConstraints();
 
-		static const stmt_init<statement_id> Statements[]
+		static constexpr stmt_init<statement_id> Statements[]
 		{
 			{ stmtEnum,                  "SELECT id, name, type, lock, time, guid, file, data FROM history WHERE kind=?1 AND key=?2 AND (?3 OR name COLLATE NOCASE =?4) ORDER BY time;"sv },
 			{ stmtEnumDesc,              "SELECT id, name, type, lock, time, guid, file, data FROM history WHERE kind=?1 AND key=?2 AND (?3 OR name COLLATE NOCASE =?4) ORDER BY lock DESC, time DESC;"sv },
@@ -1950,26 +1967,44 @@ private:
 
 	static void reindex(db_initialiser const& Db)
 	{
-		static const std::pair<std::string_view, std::string_view> ReindexTables[]
+		static constexpr struct
 		{
-			{ EDITORPOSITION_HISTORY_NAME ""sv, EDITORPOSITION_HISTORY_SCHEMA ""sv },
-			{ VIEWERPOSITION_HISTORY_NAME ""sv, VIEWERPOSITION_HISTORY_SCHEMA ""sv },
+			std::string_view Name;
+			string_view WideName;
+			std::string_view Schema;
+		}
+		ReindexTables[]
+		{
+#define INIT_TABLE(x) CHAR_SV(x ## POSITION_HISTORY_NAME), WIDE_SV(x ## POSITION_HISTORY_NAME), CHAR_SV(x ## POSITION_HISTORY_SCHEMA)
+			{ INIT_TABLE(EDITOR) },
+			{ INIT_TABLE(VIEWER) },
+#undef INIT_TABLE
 		};
 
-		for (const auto& [Name, Schema]: ReindexTables)
+		for (const auto& Table: ReindexTables)
 		{
-			const auto reindex = [&, Name = Name]{ Db.Exec(format(FSTR("REINDEX {}"sv), Name)); };
+			const auto reindex = [&]{ Db.Exec(far::format("REINDEX {}"sv, Table.Name)); };
 
 			try
 			{
-				reindex();
+				if (const auto stmtIntegrityCheck = Db.create_stmt(far::format("PRAGMA INTEGRITY_CHECK({})"sv, Table.Name)); stmtIntegrityCheck.Step())
+				{
+					if (const auto Result = stmtIntegrityCheck.GetColText(0); Result != L"ok"sv)
+					{
+						LOGWARNING(L"Integrity issue in {}: {}, reindexing the table"sv, Table.WideName, Result);
+						reindex();
+						LOGINFO(L"Reindexing of {} completed"sv, Table.WideName);
+					}
+				}
 			}
 			catch (far_sqlite_exception const& e)
 			{
-				if (!e.is_constaint_unique())
+				LOGWARNING(L"{}"sv, e);
+
+				if (!e.is_constraint_unique())
 					throw;
 
-				recreate_position_history(Db, Name, Schema);
+				recreate_position_history(Db, Table.Name, Table.Schema);
 				reindex();
 			}
 		}
@@ -1984,16 +2019,16 @@ private:
 		// The order is important - https://sqlite.org/lang_altertable.html
 
 		// 1. Create new table
-		Db.Exec(format(FSTR("CREATE TABLE {}_new{}"sv), Table, Schema));
+		Db.Exec(far::format("CREATE TABLE {}_new{}"sv, Table, Schema));
 
 		// 2. Copy data. "WHERE 1=1" is a dirty hack to prevent xfer optimization.
-		Db.Exec(format(FSTR("INSERT OR IGNORE INTO {0}_new SELECT * FROM {0} WHERE 1=1"sv), Table));
+		Db.Exec(far::format("INSERT OR IGNORE INTO {0}_new SELECT * FROM {0} WHERE 1=1"sv, Table));
 
 		// 3. Drop old table
-		Db.Exec(format(FSTR("DROP TABLE {}"sv), Table));
+		Db.Exec(far::format("DROP TABLE {}"sv, Table));
 
 		// 4. Rename new into old
-		Db.Exec(format(FSTR("ALTER TABLE {0}_new RENAME TO {0}"sv), Table));
+		Db.Exec(far::format("ALTER TABLE {0}_new RENAME TO {0}"sv, Table));
 	}
 
 	void Delete(primary_key const id) override
@@ -2330,10 +2365,9 @@ private:
 	void Export(representation_destination&) const override {}
 };
 
-static bool is_uuid(string_view const Str)
+bool is_uuid(string_view const Str)
 {
-	static const std::wregex re(RE_BEGIN RE_ANY_UUID RE_END, std::regex::icase | std::regex::optimize);
-	return std::regex_search(ALL_CONST_RANGE(Str), re);
+	return uuid::try_parse(Str).has_value();
 }
 
 }
@@ -2363,7 +2397,7 @@ void config_provider::TryImportDatabase(representable& p, const char* NodeName, 
 			for (const auto& i: xml_enum(root.FirstChildElement("pluginsconfig"), "plugin"))
 			{
 				const auto Uuid = i.Attribute("guid");
-				if (Uuid && 0 == strcmp(Uuid, NodeName))
+				if (Uuid && !std::strcmp(Uuid, NodeName))
 				{
 					m_TemplateSource->SetRoot(&const_cast<tinyxml::XMLElement&>(i));
 					p.Import(*m_TemplateSource);
@@ -2375,8 +2409,7 @@ void config_provider::TryImportDatabase(representable& p, const char* NodeName, 
 	}
 }
 
-template<class T>
-void config_provider::ImportDatabase(T& Database, const char* ImportNodeName, bool IsPlugin)
+void config_provider::ImportDatabase(auto& Database, const char* ImportNodeName, bool IsPlugin)
 {
 	if (m_Mode != mode::m_import && Database.IsNew())
 	{
@@ -2391,15 +2424,15 @@ static string GetDatabasePath(string_view const FileName, bool const Local)
 		path::join(Local? Global->Opt->LocalProfilePath : Global->Opt->ProfilePath, FileName) + L".db"sv;
 }
 
-string rename_bad_database(string_view const Name)
+static string rename_bad_database(string_view const Name)
 {
 	for (size_t i = 0; ; ++i)
 	{
-		const auto Dest = format(FSTR(L"{}.bad{}"sv), Name, i? format(FSTR(L".{}"sv), Name) : L""sv);
+		const auto Dest = far::format(L"{}.bad{}"sv, Name, i? far::format(L".{}"sv, Name) : L""sv);
 		if (os::fs::move_file(Name, Dest))
 			return Dest;
 
-		const auto ErrorState = last_error();
+		const auto ErrorState = os::last_error();
 		if (ErrorState.Win32Error == ERROR_ALREADY_EXISTS)
 			continue;
 
@@ -2424,7 +2457,7 @@ std::unique_ptr<T> config_provider::CreateWithFallback(string_view const Name)
 	{
 		return std::make_unique<T>(Name);
 	}
-	catch (const far_sqlite_exception& e1)
+	catch (far_sqlite_exception const& e1)
 	{
 		Report(concat(Name, L':'));
 		Report(concat(L"  "sv, e1.message()));
@@ -2447,10 +2480,10 @@ std::unique_ptr<T> config_provider::CreateWithFallback(string_view const Name)
 		try
 		{
 			auto Result = std::make_unique<T>(Name);
-			Report(format(FSTR(L"  - database file is renamed to {} and new one is created"sv), PointToName(NewName)));
+			Report(far::format(L"  - database file is renamed to {} and new one is created"sv, PointToName(NewName)));
 			return Result;
 		}
-		catch (const far_sqlite_exception& e2)
+		catch (far_sqlite_exception const& e2)
 		{
 			Report(concat(L"  "sv, e2.message()));
 			Report(L"  - database is opened in memory"sv);
@@ -2465,7 +2498,7 @@ std::unique_ptr<T> config_provider::CreateDatabase(string_view const Name, bool 
 	const auto FullName = GetDatabasePath(Name, Local);
 
 	os::mutex m(os::make_name<os::mutex>(Local? Global->Opt->LocalProfilePath : Global->Opt->ProfilePath, Name));
-	SCOPED_ACTION(std::lock_guard)(m);
+	SCOPED_ACTION(std::scoped_lock)(m);
 
 	auto Database = CreateWithFallback<T>(FullName);
 
@@ -2535,7 +2568,7 @@ config_provider::implementation::~implementation()
 
 static auto pluginscache_db_name()
 {
-	return format(FSTR(L"plugincache.{}"sv), build::platform());
+	return far::format(L"plugincache.{}"sv, build::platform());
 }
 
 
@@ -2568,7 +2601,7 @@ void config_provider::Export(string_view const File)
 	representation_destination Representation;
 	auto& root = Representation.Root();
 	const auto Version = build::version();
-	SetAttribute(root, "version", format(FSTR("{}.{}.{}"), Version.Major, Version.Minor, Version.Build));
+	SetAttribute(root, "version", far::format("{}.{}.{}"sv, Version.Major, Version.Minor, Version.Build));
 
 	GeneralCfg()->Export(Representation);
 	LocalGeneralCfg()->Export(Representation);
@@ -2591,6 +2624,9 @@ void config_provider::Export(string_view const File)
 		auto& e = CreateChild(root, "pluginsconfig");
 		for(const auto& i: os::fs::enum_files(path::join(Global->Opt->ProfilePath, L"PluginsData"sv, Ext)))
 		{
+			if (!os::fs::is_file(i))
+				continue;
+
 			const auto FileName = name_ext(i.FileName).first;
 			if (!is_uuid(FileName))
 				continue;
@@ -2611,7 +2647,8 @@ void config_provider::ServiceMode(string_view const File)
 	{
 	case mode::m_import: return Import(File);
 	case mode::m_export: return Export(File);
-	default: UNREACHABLE;
+	default:
+		std::unreachable();
 	}
 }
 
@@ -2665,7 +2702,7 @@ bool config_provider::ShowProblems() const
 void config_provider::AsyncCall(async_key, const std::function<void()>& Routine)
 {
 	std::erase_if(m_Threads, [](const os::thread& i){ return i.is_signaled(); });
-	m_Threads.emplace_back(os::thread::mode::join, Routine);
+	m_Threads.emplace_back(Routine);
 }
 
 config_provider& ConfigProvider()

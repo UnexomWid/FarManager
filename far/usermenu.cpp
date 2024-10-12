@@ -52,6 +52,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "message.hpp"
 #include "fnparce.hpp"
 #include "pathmix.hpp"
+#include "exitcode.hpp"
 #include "panelmix.hpp"
 #include "filestr.hpp"
 #include "interf.hpp"
@@ -63,14 +64,15 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "file_io.hpp"
 #include "keyboard.hpp"
 #include "log.hpp"
+#include "codepage.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.env.hpp"
 #include "platform.fs.hpp"
 
 // Common:
 #include "common/from_string.hpp"
-#include "common/range.hpp"
 #include "common/scope_exit.hpp"
 
 // External:
@@ -111,21 +113,18 @@ private:
 	void SaveMenu(string_view MenuFileName) const;
 	intptr_t EditMenuDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
 
-	enum class menu_mode : int;
+	enum class menu_mode
+	{
+		local,
+		user,
+		global,
+	};
 
-	menu_mode m_MenuMode;
+	menu_mode m_MenuMode{ menu_mode::local };
 	mutable bool m_MenuModified{};
 	bool m_ItemChanged{};
-	uintptr_t m_MenuCP;
+	uintptr_t m_MenuCP{ default_menu_file_codepage };
 	menu_container m_Menu;
-};
-
-// Режимы показа меню (Menu mode)
-enum class UserMenu::menu_mode: int
-{
-	local,
-	user,
-	global,
 };
 
 // Коды выхода из меню (Exit codes)
@@ -197,7 +196,7 @@ static string SerializeMenu(const UserMenu::menu_container& Menu)
 	return Result;
 }
 
-static void ParseMenu(UserMenu::menu_container& Menu, range<enum_lines::iterator> const FileStrings, bool OldFormat)
+static void ParseMenu(UserMenu::menu_container& Menu, std::ranges::subrange<enum_lines::iterator> const FileStrings, bool OldFormat)
 {
 	UserMenu::menu_container::value_type *MenuItem = nullptr;
 
@@ -265,22 +264,18 @@ static void DeserializeMenu(UserMenu::menu_container& Menu, const os::fs::file& 
 	enum_lines EnumFileLines(Stream, Codepage);
 	ParseMenu(Menu, EnumFileLines, Codepage == encoding::codepage::oem());
 
-	if (!IsUnicodeOrUtfCodePage(Codepage))
+	if (!IsUtfCodePage(Codepage))
 	{
 		Codepage = default_menu_file_codepage;
 	}
 }
 
-UserMenu::UserMenu(bool ChooseMenuType):
-	m_MenuMode(menu_mode::local),
-	m_MenuCP(default_menu_file_codepage)
+UserMenu::UserMenu(bool ChooseMenuType)
 {
 	ProcessUserMenu(ChooseMenuType, {});
 }
 
-UserMenu::UserMenu(string_view const MenuFileName):
-	m_MenuMode(menu_mode::local),
-	m_MenuCP(default_menu_file_codepage)
+UserMenu::UserMenu(string_view const MenuFileName)
 {
 	ProcessUserMenu(false, MenuFileName);
 }
@@ -312,7 +307,7 @@ void UserMenu::SaveMenu(string_view const MenuFileName) const
 
 		if (!os::fs::set_file_attributes(MenuFileName, FileAttr & ~FILE_ATTRIBUTE_READONLY)) //BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, MenuFileName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, MenuFileName, os::last_error());
 		}
 	}
 
@@ -321,7 +316,7 @@ void UserMenu::SaveMenu(string_view const MenuFileName) const
 		if (SerialisedMenu.empty())
 		{
 			if (!os::fs::delete_file(MenuFileName))
-				throw MAKE_FAR_EXCEPTION(L"Can't delete the file"sv);
+				throw far_exception(L"Can't delete the file"sv);
 
 			return;
 		}
@@ -336,7 +331,7 @@ void UserMenu::SaveMenu(string_view const MenuFileName) const
 			Stream << StrStream.rdbuf();
 		});
 	}
-	catch (const far_exception& e)
+	catch (far_exception const& e)
 	{
 		Message(MSG_WARNING, e,
 			msg(lng::MError),
@@ -347,7 +342,7 @@ void UserMenu::SaveMenu(string_view const MenuFileName) const
 	}
 }
 
-void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view const MenuFileName)
+void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view MenuFileName)
 {
 	// Путь к текущему каталогу с файлом LocalMenuFileName
 	string strMenuFilePath;
@@ -378,7 +373,20 @@ void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view const MenuFileNa
 			return;
 
 		default:
-			UNREACHABLE;
+			std::unreachable();
+		}
+	}
+	else
+	{
+		if (MenuFileName.empty())
+		{
+			strMenuFilePath = Global->CtrlObject->Cp()->ActivePanel()->GetCurDir();
+		}
+		else
+		{
+			auto ParentDir = MenuFileName;
+			CutToParent(ParentDir);
+			strMenuFilePath = ParentDir;
 		}
 	}
 
@@ -399,13 +407,13 @@ void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view const MenuFileNa
 		{
 			try
 			{
-				if (const auto MenuFile = os::fs::file(strMenuFileFullPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING))
+				if (const auto MenuFile = os::fs::file(strMenuFileFullPath, GENERIC_READ, os::fs::file_share_read, nullptr, OPEN_EXISTING))
 					DeserializeMenu(m_Menu, MenuFile, m_MenuCP);
 			}
 			catch (std::exception const& e)
 			{
 				m_Menu.clear();
-				LOGWARNING(L"{}"sv, e);
+				LOGERROR(L"{}"sv, e);
 			}
 		}
 		else if (m_MenuMode != menu_mode::user)
@@ -463,6 +471,10 @@ void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view const MenuFileNa
 			{
 				if (m_MenuMode == menu_mode::local)
 				{
+					// Menu can be invoked from any file with any name
+					// Going up switches to standard names & logic
+					MenuFileName = {};
+
 					if (CutToParent(strMenuFilePath))
 					{
 						continue;
@@ -486,6 +498,10 @@ void UserMenu::ProcessUserMenu(bool ChooseMenuType, string_view const MenuFileNa
 				switch (m_MenuMode)
 				{
 					case menu_mode::local:
+						// Menu can be invoked from any file with any name
+						// Switching to global switches to standard names & logic
+						MenuFileName = {};
+
 						m_MenuMode = menu_mode::global;
 						strMenuFilePath = Global->Opt->GlobalUserMenuDir;
 						break;
@@ -596,7 +612,7 @@ int UserMenu::ProcessSingleMenu(std::list<UserMenuItem>& Menu, int MenuPos, std:
 			// CurrentMenuItem can be nullptr if:
 			// - menu is empty
 			// - menu is not empty, but insidiously consists only of separators
-			const auto CurrentMenuItem = UserMenu->GetComplexUserDataPtr<ITERATOR(Menu)>(MenuPos);
+			const auto CurrentMenuItem = UserMenu->GetComplexUserDataPtr<std::ranges::iterator_t<decltype(Menu)>>(MenuPos);
 			if (Key==KEY_SHIFTF1)
 			{
 				UserMenu->Key(KEY_F1);
@@ -700,11 +716,11 @@ int UserMenu::ProcessSingleMenu(std::list<UserMenuItem>& Menu, int MenuPos, std:
 					SaveMenu(MenuFileName);
 					{
 						const auto ShellEditor = FileEditor::create(MenuFileName, m_MenuCP, FFILEEDIT_DISABLEHISTORY, -1, -1, nullptr);
-						if (-1 == ShellEditor->GetExitCode()) Global->WindowManager->ExecuteModal(ShellEditor);
-						if (!ShellEditor->IsFileChanged())
+						if (any_of(ShellEditor->GetExitCode(), -1, XC_OPEN_NEWINSTANCE)) Global->WindowManager->ExecuteModal(ShellEditor);
+						if (!ShellEditor->WasFileSaved())
 							break;
 					}
-					if (const auto MenuFile = os::fs::file(MenuFileName, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING))
+					if (const auto MenuFile = os::fs::file(MenuFileName, GENERIC_READ, os::fs::file_share_read, nullptr, OPEN_EXISTING))
 					{
 						MenuRoot.clear();
 						try
@@ -714,7 +730,7 @@ int UserMenu::ProcessSingleMenu(std::list<UserMenuItem>& Menu, int MenuPos, std:
 						catch (std::exception const& e)
 						{
 							MenuRoot.clear();
-							LOGWARNING(L"{}"sv, e);
+							LOGERROR(L"{}"sv, e);
 						}
 
 						ReturnCode = 0;
@@ -760,16 +776,17 @@ int UserMenu::ProcessSingleMenu(std::list<UserMenuItem>& Menu, int MenuPos, std:
 			return EC_CLOSE_LEVEL; //  вверх на один уровень
 
 		// This time CurrentMenuItem shall never be nullptr - for all weird cases ExitCode must be -1
-		const auto CurrentMenuItem = UserMenu->GetComplexUserDataPtr<ITERATOR(Menu)>(UserMenu->GetSelectPos());
+		const auto CurrentMenuItem = UserMenu->GetComplexUserDataPtr<std::ranges::iterator_t<decltype(Menu)>>(UserMenu->GetSelectPos());
 
 		auto CurrentLabel = (*CurrentMenuItem)->strLabel;
 		SubstFileName(CurrentLabel, Context, {}, true, {}, true);
 		CurrentLabel = os::env::expand(CurrentLabel);
+		inplace::remove_highlight(CurrentLabel);
 
 		if ((*CurrentMenuItem)->Submenu)
 		{
 			/* $ 14.07.2000 VVM ! Если закрыли подменю, то остаться. Иначе передать управление выше */
-			MenuPos = ProcessSingleMenu((*CurrentMenuItem)->Menu, 0, MenuRoot, MenuFileName, concat(Title, L" \xbb "sv, CurrentLabel));
+			MenuPos = ProcessSingleMenu((*CurrentMenuItem)->Menu, 0, MenuRoot, MenuFileName, concat(Title, L" » "sv, CurrentLabel));
 
 			if (MenuPos!=EC_CLOSE_LEVEL)
 				return MenuPos;
@@ -900,8 +917,8 @@ intptr_t UserMenu::EditMenuDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, v
 			if (Param1==EM_BUTTON_OK)
 			{
 				bool Result = true;
-				const string_view HotKey = view_as<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EM_HOTKEY_EDIT, nullptr));
-				const string_view Label = view_as<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EM_LABEL_EDIT, nullptr));
+				const string_view HotKey = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EM_HOTKEY_EDIT, nullptr));
+				const string_view Label = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EM_LABEL_EDIT, nullptr));
 				int FocusPos=-1;
 
 				if (HotKey != L"--"sv)
@@ -916,7 +933,7 @@ intptr_t UserMenu::EditMenuDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, v
 
 						if (upper(HotKey.front()) == L'F')
 						{
-							if (in_closed_range(1, from_string<int>(HotKey.substr(1)), 24))
+							if (int Number; from_string(HotKey.substr(1), Number) && in_closed_range(1, Number, 24))
 								FocusPos=-1;
 						}
 					}
@@ -1063,7 +1080,7 @@ bool UserMenu::EditMenu(std::list<UserMenuItem>& Menu, std::list<UserMenuItem>::
 #endif
 	}
 
-	const auto Dlg = Dialog::create(EditDlg, &UserMenu::EditMenuDlgProc, this);
+	const auto Dlg = Dialog::create(EditDlg, std::bind_front(&UserMenu::EditMenuDlgProc, this));
 	Dlg->SetHelp(L"UserMenu"sv);
 	Dlg->SetId(EditUserMenuId);
 	Dlg->SetPosition({ -1, -1, DLG_X, DLG_Y });
@@ -1096,7 +1113,7 @@ bool UserMenu::EditMenu(std::list<UserMenuItem>& Menu, std::list<UserMenuItem>::
 #else
 		size_t CommandNumber = 0;
 
-		for (const auto& i: irange(DI_EDIT_COUNT))
+		for (const auto i: std::views::iota(0uz, static_cast<size_t>(DI_EDIT_COUNT)))
 		{
 			if (!EditDlg[i + EM_EDITLINE_0].strData.empty())
 				CommandNumber = i + 1;
@@ -1104,7 +1121,7 @@ bool UserMenu::EditMenu(std::list<UserMenuItem>& Menu, std::list<UserMenuItem>::
 
 		(*MenuItem)->Commands.clear();
 
-		for (const auto& i: irange(DI_EDIT_COUNT))
+		for (const auto i: std::views::iota(0uz, static_cast<size_t>(DI_EDIT_COUNT)))
 		{
 			if (static_cast<size_t>(i) >= CommandNumber)
 				break;

@@ -38,47 +38,39 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.hpp"
 
 // Common:
+#include "common/source_location.hpp"
 
 // External:
 
 //----------------------------------------------------------------------------
 
-struct error_state
-{
-	int Errno = 0;
-	DWORD Win32Error = ERROR_SUCCESS;
-	NTSTATUS NtError = STATUS_SUCCESS;
-
-	bool any() const
-	{
-		return Errno || Win32Error != ERROR_SUCCESS || NtError != STATUS_SUCCESS;
-	}
-
-	string ErrnoStr() const;
-	string Win32ErrorStr() const;
-	string NtErrorStr() const;
-
-	std::array<string, 3> format_errors() const;
-
-	string to_string() const;
-};
-
-struct error_state_ex: public error_state
+struct error_state_ex: public os::error_state
 {
 	error_state_ex() = default;
 
-	error_state_ex(const error_state& State, string_view const Message = {}):
+	explicit(false) error_state_ex(const error_state& State, string_view const Message = {}, int Errno = 0):
 		error_state(State),
-		What(Message)
+		What(Message),
+		Errno(Errno)
 	{
 	}
 
-	string format_error() const;
+	[[nodiscard]]
+	bool any() const
+	{
+		return Errno != 0 || error_state::any();
+	}
+
+	[[nodiscard]] string ErrnoStr() const;
+
+	[[nodiscard]] string system_error() const;
+	[[nodiscard]] string to_string() const;
 
 	string What;
+	int Errno{};
 };
 
-error_state last_error();
+string source_location_to_string(source_location const& Location);
 
 namespace detail
 {
@@ -87,29 +79,30 @@ namespace detail
 	public:
 		[[nodiscard]] const auto& message() const noexcept { return What; }
 		[[nodiscard]] const auto& full_message() const noexcept { return m_FullMessage; }
-		[[nodiscard]] const auto& function() const noexcept { return m_Function; }
 		[[nodiscard]] const auto& location() const noexcept { return m_Location; }
+		[[nodiscard]] string to_string() const;
 
 	protected:
-		far_base_exception(bool CaptureErrors, string_view Message, std::string_view Function, std::string_view File, int Line);
+		explicit far_base_exception(error_state_ex ErrorState, source_location const& Location);
 
 	private:
-		std::string m_Function;
-		string m_Location;
+		source_location m_Location;
 		string m_FullMessage;
 	};
 
 	class far_std_exception : public far_base_exception, public std::runtime_error
 	{
 	public:
-		template<typename... args>
-		explicit far_std_exception(args&&... Args):
-			far_base_exception(FWD(Args)...),
-			std::runtime_error(convert_message())
-		{}
+		explicit far_std_exception(error_state_ex ErrorState, source_location const& Location = source_location::current()):
+			far_base_exception(std::move(ErrorState), Location),
+			std::runtime_error(convert_message(full_message()))
+		{
+		}
+
+		explicit far_std_exception(string_view Message, bool CaptureErrors = true, source_location const& Location = source_location::current());
 
 	private:
-		[[nodiscard]] std::string convert_message() const;
+		[[nodiscard]] static std::string convert_message(string_view Message);
 	};
 
 	class break_into_debugger
@@ -146,16 +139,26 @@ class far_exception: public detail::far_std_exception
  */
 class far_known_exception final: public far_exception
 {
-	using far_exception::far_exception;
+public:
+	explicit far_known_exception(string_view const Message, source_location const& Location = source_location::current()):
+		far_exception(Message, false, Location)
+	{
+	}
 };
 
-#define MAKE_EXCEPTION(ExceptionType, ...) ExceptionType(__VA_ARGS__, CURRENT_FUNCTION_NAME, CURRENT_FILE_NAME, __LINE__)
-#define MAKE_FAR_FATAL_EXCEPTION(...) MAKE_EXCEPTION(far_fatal_exception, true, __VA_ARGS__)
-#define MAKE_FAR_EXCEPTION(...) MAKE_EXCEPTION(far_exception, true, __VA_ARGS__)
-#define MAKE_FAR_KNOWN_EXCEPTION(...) MAKE_EXCEPTION(far_known_exception, false, __VA_ARGS__)
+template<typename T>
+struct formattable;
 
-std::wostream& operator<<(std::wostream& Stream, error_state const& e);
-std::wostream& operator<<(std::wostream& Stream, error_state_ex const& e);
-std::wostream& operator<<(std::wostream& Stream, detail::far_base_exception const& e);
+template<>
+struct formattable<std::exception>
+{
+	static string to_string(std::exception const& e);
+};
+
+constexpr inline struct unknown_exception_t
+{
+	static string to_string();
+}
+unknown_exception;
 
 #endif // EXCEPTION_HPP_2CD5B7D1_D39C_4CAF_858A_62496C9221DF

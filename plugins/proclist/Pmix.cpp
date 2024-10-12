@@ -2,6 +2,8 @@
 #include "Proclng.hpp"
 #include "guid.hpp"
 
+#include <smart_ptr.hpp>
+
 const wchar_t* GetMsg(int MsgId)
 {
 	return PsInfo.GetMsg(&MainGuid, MsgId);
@@ -51,7 +53,7 @@ int WinError(const wchar_t* pSourceModule)
 	}
 	else
 	{
-		Buffer = format(FSTR(L"Error 0x{0:08X}"), LastError);
+		Buffer = far::format(L"Error 0x{0:08X}"sv, LastError);
 	}
 
 	Buffer.resize(Buffer.find_last_not_of(L"\r\n") + 1);

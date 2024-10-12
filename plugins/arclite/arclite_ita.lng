@@ -83,6 +83,8 @@
 "LZMA"
 "LZMA2"
 "PPMD"
+"Deflate"
+"Deflate64"
 
 // Delete files
 "Vuoi Eliminare I Files Selezionati?"
@@ -337,6 +339,13 @@
 "Copy Link"
 "Arc FileName"
 "Is Hash"
+"Metadata Changed"
+"User ID"
+"Group ID"
+"Device Major"
+"Device Minor"
+"Dev Major"
+"Dev Minor"
 
 // Property values
 "Si"

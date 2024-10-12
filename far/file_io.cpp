@@ -45,6 +45,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -99,7 +100,7 @@ void save_file_with_replace(string_view const FileName, os::fs::attributes const
 			return os::fs::file(
 				OutFileName,
 				GENERIC_WRITE,
-				FILE_SHARE_READ,
+				os::fs::file_share_read,
 				Security,
 				IsFileExists && !UseTemporaryFile? TRUNCATE_EXISTING : CreationDistribution,
 				// No FILE_ATTRIBUTE_SYSTEM at this point to avoid potential conflicts with FILE_ATTRIBUTE_ENCRYPTED. We will set it later.
@@ -114,7 +115,7 @@ void save_file_with_replace(string_view const FileName, os::fs::attributes const
 
 		// TODO: lng?
 		if (!OutFile)
-			throw MAKE_FAR_EXCEPTION(
+			throw far_exception(
 				UseTemporaryFile?
 					L"Can't create a temporary file"sv :
 					IsFileExists?
@@ -129,17 +130,25 @@ void save_file_with_replace(string_view const FileName, os::fs::attributes const
 
 		Stream.flush();
 		OutFile.SetEnd();
+
+		if (UseTemporaryFile)
+		{
+			if (os::chrono::time_point CreationTime; os::fs::GetFileTimeSimple(FileName, &CreationTime, {}, {}, {}))
+			{
+				OutFile.SetTime(&CreationTime, {}, {}, {});
+			}
+		}
 	}
 
 	if (UseTemporaryFile)
 	{
 		if (!os::fs::replace_file(FileName, OutFileName, CreateBackup? FileName + L".bak"sv : L""sv, REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS))
-			throw MAKE_FAR_EXCEPTION(L"Can't replace the file"sv);
+			throw far_exception(L"Can't replace the file"sv);
 	}
 
 	// No error checking - non-critical
 	if (!os::fs::set_file_attributes(FileName, NewAttributes))
 	{
-		LOGWARNING(L"set_file_attributes({}): {}"sv, FileName, last_error());
+		LOGWARNING(L"set_file_attributes({}): {}"sv, FileName, os::last_error());
 	}
 }

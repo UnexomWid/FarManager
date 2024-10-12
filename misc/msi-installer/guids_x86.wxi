@@ -43,6 +43,13 @@
 <?define Guid.RestoreOldPluginSettings.cmd = "78865DFA-894A-45C4-805B-B18FF3256D2D" ?>
 <?define Guid.SaveOldPluginSettings.cmd = "13657D33-EF93-4E21-878E-62EFBC298C4D" ?>
 
+<?define Guid.sqlite3.dll = "B225AC03-192E-4F26-9CFB-1DB82AFA9973" ?>
+<?define Guid.sqlite3.map = "B3E0A4EA-9536-4AEE-BF9D-94F443A832AF" ?>
+
+<?define Guid.Far.VisualElementsManifest.xml = "6514CCA9-38B4-4D12-8E1D-AE3F30612B58" ?>
+<?define Guid.VisualElements.large.png = "1FF864EB-ED74-4339-8CFE-753A8415484C" ?>
+<?define Guid.VisualElements.small.png = "01737A04-59F0-4E52-BD4B-CD05F136BEC0" ?>
+
 <?define Guid.Descript.ion_1 = "53082A05-AA6E-4931-9B28-5D0D6DD37BCC" ?>
 <?define Guid.README.TXT_1 = "D2DF9298-2312-4217-BB1D-AFCEB8D6D7FB" ?>
 <?define Guid.Descript.ion_3 = "1199BB9A-D1E1-49F4-B99D-71D7EB7B2D89" ?>
@@ -74,6 +81,7 @@
 <?define Guid.nc5pal2.farconfig_1 = "5952E8F6-6250-4601-83E9-AE5C39FC8D43" ?>
 <?define Guid.Rodion_Doroshkevich.farconfig_1 = "63B4B80A-17EA-4383-AF6F-7E7BEB24B8A6" ?>
 <?define Guid.VaxColors.farconfig_1 = "0098BE83-B20C-4964-B648-DA3646447D50" ?>
+<?define Guid.black_and_white.farconfig_2 = "1BE94E4C-D282-4C41-8B6F-A29A90C5D23A" ?>
 <?define Guid.black_from_Fonarev.farconfig_2 = "F4CE556D-679F-442F-B8DD-32DD3F2A1A94" ?>
 <?define Guid.black_from_july.farconfig_2 = "67754516-3C49-4BF0-B0A7-81F9F6EB798F" ?>
 <?define Guid.black_from_Myodov.farconfig_2 = "B571EA0C-9A6A-4564-B21A-735852E7487C" ?>
@@ -100,6 +108,7 @@
 <?define Guid.Edit.OpenURL.lua = "A999F555-BDBF-4133-B121-C81141EDEB21" ?>
 <?define Guid.Edit.SaveAndExit.lua = "469711CD-9306-4A66-B2B3-AE91770CA909" ?>
 <?define Guid.Edit.SaveFile.lua = "0FAE2BC2-9A43-436B-A5EC-D0853511EE75" ?>
+<?define Guid.Edit.SelectionStartEnd.lua = "7EAE2FFF-EA99-4B2A-908A-A76811BD434C" ?>
 <?define Guid.F3.lua = "022A1CFE-CD76-4FC6-B2AB-4FA17515CE17" ?>
 <?define Guid.F9DeactivateMenu.lua = "724E2805-A1C0-4B5C-91E8-60DC324BE58C" ?>
 <?define Guid.F9Table.lua = "B3A35AC7-0CE1-4871-B9C1-924D3D66E1ED" ?>
@@ -125,6 +134,7 @@
 <?define Guid.Panel.Search.CtrlIns.lua = "9A712F58-6917-4353-A80C-F0DE27A419B2" ?>
 <?define Guid.ShiftBS.lua = "638743BB-D4CE-47A5-A396-7694CAD9D02C" ?>
 <?define Guid.ShiftTab.lua = "2CBFADCC-7E55-4B8D-B2A6-24F891F3B3E2" ?>
+<?define Guid.SwapHorizontalScrollDirection.lua = "1E88CD5B-8B2E-4F67-8F8F-5CFD15F9ECCD" ?>
 <?define Guid.Symlink.lua = "161D54C6-F4C4-4AB3-ADD6-D852FEAB818F" ?>
 <?define Guid.UppercaseFolders.lua = "60239181-B882-4F76-B3CB-899A902E1604" ?>
 <?define Guid.View.CtrlUpDown.lua = "27C5A1BF-2A3C-40DB-A722-BFBC1A6FB377" ?>
@@ -132,13 +142,13 @@
 <?define Guid.View.PgDn.lua = "E4CA6AAA-2D5F-4A8F-9B4D-39443C5ECB38" ?>
 <?define Guid.View.ShiftInsSearch.lua = "EA20B433-D76C-4EC6-8675-167FED64A2CD" ?>
 <?define Guid.View.Space.lua = "2CB0ED75-7E68-47F8-B069-EC31B209AF71" ?>
+<?define Guid.View.TypeToSearch.lua = "590020E7-A902-41F5-99C5-FA87468A3953" ?>
 <?define Guid.WheelScreenSwitch.lua = "3723CD53-1846-4C77-993B-9FD634AD74AC" ?>
 <?define Guid.Editor.ColorWord.moon = "5D62E549-E310-4302-B04E-E57801B25FD8" ?>
 <?define Guid.Default165.farconfig = "4120318A-A58C-423C-BE28-3997F7440A4A" ?>
 <?define Guid.Descript.ion_7 = "F4B19DFA-6ABC-4FC5-99FC-2B796068DFE6" ?>
 <?define Guid.Executor.4NT.farconfig = "E10CCA0C-AE1D-4636-92F7-4471E3C50286" ?>
 <?define Guid.Executor.CMD.farconfig = "A1E15E20-6BE3-4129-97C4-B7C3F10E4B02" ?>
-<?define Guid.Executor.COMMAND.farconfig = "6F4C4851-4D7C-4B08-817D-FF0C96CFDD55" ?>
 <?define Guid.WindowsGUI.farconfig = "35541889-6F24-4F54-95E2-144CBD01616B" ?>
 <?define Guid.WindowsGUI.lua = "73621107-7971-4396-AB74-36D8B1A895D8" ?>
 <?define Guid.Descript.ion_8 = "72E2B673-4071-4302-84ED-A75D539EC742" ?>
@@ -160,6 +170,11 @@
 <?define Guid.Plugins.Install.txt_1 = "A1578535-2923-4354-9559-511EA822F151" ?>
 <?define Guid.Plugins.Review.txt_1 = "CFA9F6CD-AC5D-4264-B525-F6082B354DF4" ?>
 <?define Guid.TechInfo.txt_1 = "CEB2F999-37E1-46FD-8C2E-843C701620C4" ?>
+<?define Guid.Bug.Report.txt_2 = "E2500E56-E7E4-4237-BE10-13A39758D7AC" ?>
+<?define Guid.Far.FAQ.txt_2 = "A578FCF3-79F7-4AE4-B2FF-06745F3AE0CD" ?>
+<?define Guid.Plugins.Install.txt_2 = "E06482C9-0825-453D-BC1B-4886A4A68F39" ?>
+<?define Guid.Plugins.Review.txt_2 = "67D28573-A4A8-4C62-B40B-F8408ADDCE76" ?>
+<?define Guid.TechInfo.txt_2 = "D90B28F9-2AC2-4B1B-860F-7EFC29640A92" ?>
 
 <?define Guid.Align.dll = "1593AC41-45B9-4263-A424-7048E90C8C67" ?>
 <?define Guid.Align.map = "1CBED501-4C14-4B35-B15E-DA4F773F8CA7" ?>
@@ -340,6 +355,8 @@
 <?define Guid.colorere.lng = "9558480A-6F2B-1014-9D82-B1A462AE16A7" ?>
 <?define Guid.colorerr.hlf = "95584913-6F2B-1014-8389-CAA5C3DE2596" ?>
 <?define Guid.colorerr.lng = "955849F7-6F2B-1014-9B3D-9013933D7474" ?>
+<?define Guid.colorerpol.hlf = "994BB3E4-E8AF-4100-A94B-AE3493DDB3E1" ?>
+<?define Guid.colorerpol.lng = "6928BB74-A062-409F-8326-ACA7F13CA12E" ?>
 <?define Guid.colorer.map = "95584B04-6F2B-1014-B4F5-C85CE69D0910" ?>
 <?define Guid.hrcsettings.xml = "95584BEA-6F2B-1014-8AC5-976C528BBBC4" ?>
 <?define Guid.Plugin.Colorer.lua = "0FBEB5D9-1FB2-4A19-BDB3-D0B8BC95A0AA" ?>
@@ -415,11 +432,16 @@
 
 <?define Guid.ChangeLog_11 = "8E90D597-E10E-4F29-9FBC-AED74A6AF688" ?>
 <?define Guid.NetBox.dll = "FABFEBD9-2B9B-40F1-9254-F79334A5EAA0" ?>
+<?define Guid.NetBox.map = "5AF83C1F-7884-4FDA-9612-9C81D9A5EFD3" ?>
 <?define Guid.NetBoxEng.lng = "84D0F552-3B68-49F7-A5FC-9D0ADE6BDEB1" ?>
 <?define Guid.NetBoxRus.lng = "D3EA7808-4470-4ED4-876B-58ED0D75CD0E" ?>
+<?define Guid.NetBoxPol.lng = "F8B2CCAE-4A12-479F-8CC2-B591BFC94A47" ?>
+<?define Guid.NetBoxSpa.lng = "691FF7F4-660F-4920-9DAB-8429224A0848" ?>
 <?define Guid.README.md = "5D908D6F-ACB4-4B0E-A102-9A76E47F15C7" ?>
 <?define Guid.README.RU.md = "E879951C-FCFC-49DF-8A3B-F0263C42FB7C" ?>
+<?define Guid.README.PL.md = "087C4743-BCB3-4A2B-98CC-9E8E796A306B" ?>
 <?define Guid.LICENSE.txt = "EDD17AEF-E349-4A43-B890-BE65D5B82B9C" ?>
+<?define Guid.cacert.pem = "E1BC374D-4FCA-4F14-8843-EB6E7093CFF8" ?>
 
 <?define Guid.changelog_12 = "63AFBAE0-C8BF-4ACE-B770-E78BBAA8592F" ?>
 <?define Guid.HlfViewer.dll = "90698D53-45C4-4A7D-BBC4-033E74FE690C" ?>
@@ -489,6 +511,7 @@
 <?define Guid.ProcHun.hlf = "8CD829F8-4E1E-4058-9F24-62D0E67B5B4E" ?>
 <?define Guid.ProcHun.lng = "EE6B3E53-E08F-41DF-822C-2AFF3CC72FAF" ?>
 <?define Guid.ProcLit.lng = "8A434F5C-BEE3-423F-A68A-5CEF6CE33A9F" ?>
+<?define Guid.ProcSpa.lng = "01EAAF0F-A923-4E0F-B0C2-548E3B089C48" ?>
 
 <?define Guid.changelog_17 = "6D2B97BC-5745-4DD2-BAEF-86C26C28DB73" ?>
 <?define Guid.disks.eng.temp = "48341403-182F-408A-AF5C-27B7D4901F47" ?>
@@ -501,6 +524,7 @@
 <?define Guid.shortcuts.bel.lua = "ABA8C98C-26FA-4749-9ACA-5743D978FF10" ?>
 <?define Guid.shortcuts.eng.temp = "D680C185-71A5-4AA4-B95E-A522C977F90A" ?>
 <?define Guid.shortcuts.rus.temp = "63539EEB-2A95-42FD-86DB-057011BB731A" ?>
+<?define Guid.shortcuts.pol.temp = "5F151C10-D29F-449D-A26F-81F9AE2D3382" ?>
 <?define Guid.shortcuts.bel.temp = "50CDE545-1ED7-4A2B-BDF0-C09FDA128611" ?>
 <?define Guid.TmpPanel.ListUTF8.farconfig = "0D50B147-D10D-43D5-BC61-E059319A9371" ?>
 <?define Guid.TmpEng.hlf = "C1EEFF12-0A91-4DC6-A105-529610D2BB77" ?>
@@ -552,9 +576,9 @@
 <?define Guid.luamacro.example.ini = "8E03CCC4-572B-40D6-900A-A4F1524A7F0D" ?>
 <?define Guid.lua51.dll = "1D39E4A8-1D26-44B0-8189-418D87D83809" ?>
 <?define Guid.lua51.dll_1 = "B365D738-B096-4AF5-86D4-4AA9ACEF656B" ?>
-<?define Guid.lpeg.dll = "57D8A59A-E866-42EA-9861-5895976405BE" ?>
 <?define Guid.luafar3.dll = "84A3F626-E485-400E-A50B-8A5F5B0568DE" ?>
 <?define Guid.luafar3.map = "837F1FF5-6638-4D79-83EE-DF5FB160DB0C" ?>
+
 <?define Guid.DlgBuilder.hpp = "9C10E352-F1FF-4B24-9F54-F2EA68737F22" ?>
 <?define Guid.farcolor.hpp = "7030C0CD-25D3-43BF-8591-43786F604DFD" ?>
 <?define Guid.plugin.hpp = "4C2F0C58-B243-4CF5-8F69-7BECCD41630D" ?>
@@ -563,5 +587,6 @@
 <?define Guid.luafar_manual.chm = "B967FB08-E65C-4609-9246-672D4C4CD23B" ?>
 <?define Guid.macroapi_manual.ru.chm = "87920E80-E03F-4F6D-A687-7F50CE93BE9C" ?>
 <?define Guid.macroapi_manual.en.chm = "72D9C2F2-0110-4415-AA2F-0C4E6A0FC0E4" ?>
+<?define Guid.macroapi_manual.pl.chm = "8204A326-8282-82F8-82E1-82144A899D3D" ?>
 <?define Guid.FarEncyclopedia.ru.chm = "D94650F5-956A-4887-8F26-B66B5453287D" ?>
 </Include>

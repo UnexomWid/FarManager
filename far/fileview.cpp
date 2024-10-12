@@ -53,6 +53,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "mix.hpp"
 #include "stddlg.hpp"
 #include "macroopcode.hpp"
+#include "notification.hpp"
 #include "plugins.hpp"
 #include "lang.hpp"
 #include "exitcode.hpp"
@@ -63,8 +64,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "exception.hpp"
 #include "flink.hpp"
 #include "cddrv.hpp"
+#include "codepage.hpp"
 
 // Platform:
+#include "platform.hpp"
+#include "platform.concurrency.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -133,7 +137,7 @@ private:
 	// Deliberately empty. It doesn't have to do anything,
 	// its only purpose is waking up the main loop
 	// and generating KEY_NONE to reload the file.
-	listener m_Listener{ []{} };
+	listener m_Listener{ listener::scope{L"FileView"sv}, [] {}};
 
 	std::optional<std::chrono::milliseconds> m_UpdatePeriod;
 	os::concurrency::timer m_ReloadTimer;
@@ -444,7 +448,7 @@ bool FileViewer::ProcessKey(const Manager::Key& Key)
 		case KEY_RCTRLO:
 			if (Global->WindowManager->ShowBackground())
 			{
-				SetCursorType(false, 0);
+				HideCursor();
 				WaitKey();
 				Global->WindowManager->RefreshAll();
 			}
@@ -462,9 +466,9 @@ bool FileViewer::ProcessKey(const Manager::Key& Key)
 			{
 				const auto cp = m_View->m_Codepage;
 				const auto strViewFileName = m_View->GetFileName();
-				while (!os::fs::file(strViewFileName, FILE_READ_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE | (Global->Opt->EdOpt.EditOpenedForWrite? FILE_SHARE_WRITE : 0), nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN))
+				while (!os::fs::file(strViewFileName, FILE_READ_DATA, os::fs::file_share_read | (Global->Opt->EdOpt.EditOpenedForWrite? FILE_SHARE_WRITE : 0), nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN))
 				{
-					if (OperationFailed(last_error(), strViewFileName, lng::MEditTitle, msg(lng::MEditCannotOpen), false) != operation::retry)
+					if (OperationFailed(os::last_error(), strViewFileName, lng::MEditTitle, msg(lng::MEditCannotOpen), false) != operation::retry)
 						return true;
 				}
 				const auto FilePos = m_View->GetFilePos();
@@ -568,6 +572,10 @@ FileViewer::~FileViewer()
 void FileViewer::OnDestroy()
 {
 	m_bClosing = true;
+
+	if (!m_DisableHistory && (Global->CtrlObject->Cp()->ActivePanel() || m_Name != L"-"sv))
+		Global->CtrlObject->ViewHistory->AddToHistory(m_View->GetFileName(), HR_VIEWER);
+
 	m_View->OnDestroy();
 }
 
@@ -613,7 +621,7 @@ void FileViewer::ShowStatus() const
 	SetColor(COL_VIEWERSTATUS);
 	GotoXY(m_Where.left, m_Where.top);
 
-	auto StatusLine = format(FSTR(L"│{}│{:5.5}│{:<10}│{:.3} {:<3}│{:4}"sv),
+	auto StatusLine = far::format(L"│{}│{:5.5}│{:<10}│{:.3} {:<3}│{:4}"sv,
 		L"thd"[m_View->m_DisplayMode],
 		ShortReadableCodepageName(m_View->m_Codepage),
 		m_View->FileSize,

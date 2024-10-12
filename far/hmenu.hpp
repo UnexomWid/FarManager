@@ -37,23 +37,21 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Internal:
 #include "modal.hpp"
+#include "vmenu.hpp"
 
 // Platform:
 
 // Common:
-#include "common/range.hpp"
 
 // External:
 
 //----------------------------------------------------------------------------
 
-struct menu_item;
-
 struct HMenuData
 {
 	string_view Name;
 	string_view SubMenuHelp;
-	span<menu_item> SubMenu;
+	std::span<menu_item> SubMenu;
 	bool Selected;
 	int XPos;
 };
@@ -62,7 +60,7 @@ class VMenu2;
 
 class HMenu final: public Modal
 {
-	struct private_tag {};
+	struct private_tag { explicit private_tag() = default; };
 
 public:
 	static hmenu_ptr create(HMenuData* Item, size_t ItemCount);
@@ -92,7 +90,7 @@ private:
 	bool TestMouse(const MOUSE_EVENT_RECORD *MouseEvent) const;
 	void UpdateSelectPos();
 
-	span<HMenuData> m_Item;
+	std::span<HMenuData> m_Item;
 	size_t m_SelectPos{};
 	int m_VExitCode{-1};
 	bool m_SubmenuOpened{};

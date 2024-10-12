@@ -62,7 +62,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace
 {
 	// корректировка букв
-	static DWORD CorrectFastFindKbdLayout(const INPUT_RECORD& rec, DWORD Key)
+	DWORD CorrectFastFindKbdLayout(const INPUT_RECORD& rec, DWORD Key)
 	{
 		if ((Key&(KEY_ALT | KEY_RALT)))// && Key!=(KEY_ALT|0x3C))
 		{
@@ -199,7 +199,7 @@ bool FastFind::ProcessKey(const Manager::Key& Key)
 			   проблемы с быстрым поиском.
 			   Подробнее в 00573.ChangeDirCrash.txt
 			*/
-			if (starts_with(strName, L'"'))
+			if (strName.starts_with(L'"'))
 			{
 				strName.erase(0, 1);
 				m_FindEdit->SetString(strName);

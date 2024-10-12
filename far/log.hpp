@@ -38,6 +38,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Common:
 #include "common/nifty_counter.hpp"
+#include "common/preprocessor.hpp"
+#include "common/source_location.hpp"
 
 // External:
 #include "format.hpp"
@@ -70,7 +72,7 @@ namespace logging
 	[[nodiscard]]
 	bool filter(level Level);
 
-	void log(string_view Str, level Level, std::string_view Function, std::string_view File, int Line);
+	void log(string&& Str, level Level, source_location const& Location = source_location::current());
 
 	void show();
 
@@ -80,7 +82,16 @@ namespace logging
 	bool is_log_argument(const wchar_t* Argument);
 
 	[[nodiscard]]
-	int main(const wchar_t* PipeName);
+	int main(string_view PipeName);
+
+	class suppressor
+	{
+	public:
+		NONCOPYABLE(suppressor);
+
+		suppressor();
+		~suppressor();
+	};
 }
 
 #define LOG(log_level, Format, ...) \
@@ -89,11 +100,8 @@ namespace logging
 		if (logging::filter(log_level)) \
 		{ \
 			logging::log( \
-				format(FSTR(Format), ##__VA_ARGS__), \
-				log_level, \
-				CURRENT_FUNCTION_NAME, \
-				CURRENT_FILE_NAME, \
-				__LINE__ \
+				far::format(Format, ##__VA_ARGS__), \
+				log_level \
 			); \
 		} \
 	} \

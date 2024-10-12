@@ -36,6 +36,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "codepage_selection.hpp"
 
 // Internal:
+#include "codepage.hpp"
 #include "encoding.hpp"
 #include "vmenu2.hpp"
 #include "keys.hpp"
@@ -54,7 +55,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Platform:
 
 // Common:
-#include "common/algorithm.hpp"
 #include "common/enum_tokens.hpp"
 #include "common/from_string.hpp"
 #include "common/preprocessor.hpp"
@@ -298,9 +298,20 @@ size_t codepages::GetCodePageInsertPosition(uintptr_t codePage, size_t start, si
 		}
 	};
 
-	const auto iRange = irange(start, start + length);
-	const auto Pos = std::find_if(CONST_RANGE(iRange, i) { return GetCodePage(i) >= codePage; });
-	return Pos != iRange.cend()? *Pos : start + length;
+	const auto iRange = std::views::iota(start, start + length);
+	const auto Pos = std::ranges::find_if(iRange, [&](size_t const i){ return GetCodePage(i) >= codePage; });
+	return Pos != iRange.end()? *Pos : start + length;
+}
+
+static string_view unicode_codepage_name(uintptr_t const Codepage)
+{
+	switch (Codepage)
+	{
+	case CP_UTF8:       return L"UTF-8"sv;
+	case CP_UTF16LE:    return L"UTF-16 (Little endian)"sv;
+	case CP_UTF16BE:    return L"UTF-16 (Big endian)"sv;
+	default:            return {};
+	}
 }
 
 // Добавляем все необходимые таблицы символов
@@ -327,7 +338,7 @@ void codepages::AddCodePages(DWORD codePages)
 			const auto Info = GetCodePageInfo(Cp);
 			if (!Info)
 				return str(Cp);
-			if (starts_with(Info->Name, SystemName))
+			if (Info->Name.starts_with(SystemName))
 				return Info->Name;
 			return concat(SystemName, L" - "sv, Info->Name);
 		};
@@ -362,9 +373,9 @@ void codepages::AddCodePages(DWORD codePages)
 	// unicode codepages
 	//
 	AddSeparator(msg(lng::MGetCodePageUnicode));
-	AddStandardCodePage(L"UTF-8"sv, CP_UTF8, -1, true);
-	AddStandardCodePage(L"UTF-16 (Little endian)"sv, CP_UNICODE);
-	AddStandardCodePage(L"UTF-16 (Big endian)"sv, CP_REVERSEBOM);
+	AddStandardCodePage(unicode_codepage_name(CP_UTF8), CP_UTF8, -1, true);
+	AddStandardCodePage(unicode_codepage_name(CP_UTF16LE), CP_UTF16LE);
+	AddStandardCodePage(unicode_codepage_name(CP_UTF16BE), CP_UTF16BE);
 
 	// other codepages
 	//
@@ -373,14 +384,10 @@ void codepages::AddCodePages(DWORD codePages)
 		if (IsStandardCodePage(cp))
 			continue;
 
-		// VS2017 spurious const bug
-		// auto [len, CodepageName] = Info;
-		const auto len = Info.MaxCharSize;
-		auto CodepageName = Info.Name;
-
-		if (!len || (len > 2 && (codePages & VOnly)))
+		if (!Info.MaxCharSize || (Info.MaxCharSize > 2 && (codePages & VOnly)))
 			continue;
 
+		auto CodepageName = Info.Name;
 		const auto IsCodePageNameCustom = GetCodePageCustomName(cp, CodepageName);
 		const auto selectType = GetFavorite(cp);
 
@@ -592,7 +599,7 @@ intptr_t codepages::EditDialogProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, v
 
 			if (Param1 == EDITCP_OK)
 			{
-				strCodePageName = view_as<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EDITCP_EDIT, nullptr));
+				strCodePageName = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, EDITCP_EDIT, nullptr));
 			}
 			// Если имя кодовой страницы пустое, то считаем, что имя не задано
 			if (strCodePageName.empty())
@@ -641,7 +648,7 @@ void codepages::EditCodePageName()
 
 	EditDialog[EDITCP_EDIT].strHistory = L"CodePageName"sv;
 
-	const auto Dlg = Dialog::create(EditDialog, &codepages::EditDialogProc, this);
+	const auto Dlg = Dialog::create(EditDialog, std::bind_front(&codepages::EditDialogProc, this));
 	Dlg->SetPosition({ -1, -1, 54, 7 });
 	Dlg->SetHelp(L"EditCodePageNameDlg"sv);
 	Dlg->Process();
@@ -754,7 +761,7 @@ size_t codepages::FillCodePagesList(Dialog* Dlg, size_t controlId, uintptr_t cod
 		FarListInfo info{ sizeof(info) };
 		Dlg->SendMessage(DM_LISTINFO, control, &info);
 
-		for (const auto& i: irange(info.ItemsNumber))
+		for (const auto i: std::views::iota(0uz, info.ItemsNumber))
 		{
 			if (GetListItemCodePage(i) == codePage)
 			{
@@ -772,15 +779,6 @@ size_t codepages::FillCodePagesList(Dialog* Dlg, size_t controlId, uintptr_t cod
 	return favoriteCodePages;
 }
 
-bool codepages::IsCodePageSupported(uintptr_t CodePage, size_t MaxCharSize)
-{
-	if (CodePage == CP_DEFAULT || IsStandardCodePage(CodePage))
-		return true;
-
-	const auto Info = GetCodePageInfo(CodePage);
-	return Info && Info->MaxCharSize <= MaxCharSize;
-}
-
 std::optional<cp_info> codepages::GetInfo(uintptr_t CodePage)
 {
 	const auto Info = GetCodePageInfo(CodePage);
@@ -795,15 +793,24 @@ std::optional<cp_info> codepages::GetInfo(uintptr_t CodePage)
 
 string codepages::FormatName(uintptr_t const CodePage)
 {
-	const auto Info = GetCodePageInfo(CodePage);
-	auto Name = Info? Info->Name : L"Unknown"s;
-	GetCodePageCustomName(CodePage, Name);
-	return format(FSTR(L"{}: {}"sv), CodePage, Name);
+	const auto get_name = [&]
+	{
+		if (const auto Name = unicode_codepage_name(CodePage); !Name.empty())
+			return string(Name);
+
+		const auto Info = GetCodePageInfo(CodePage);
+		auto Name = Info? Info->Name : L"Unknown"s;
+		GetCodePageCustomName(CodePage, Name);
+		return Name;
+	};
+
+	return far::format(L"{}: {}"sv, CodePage, get_name());
 }
 
 string codepages::UnsupportedCharacterMessage(wchar_t const Char)
 {
-	return format(msg(lng::MCharacterIsNotSupportedByTheCodepage), Char);
+	const auto UnicodeNotation = far::format(L"U+{0:04X}"sv, Char);
+	return far::vformat(msg(lng::MCharacterIsNotSupportedByTheCodepage), Char, UnicodeNotation);
 }
 
 long long codepages::GetFavorite(uintptr_t cp)
@@ -829,7 +836,7 @@ F8CP::F8CP(bool viewer):
 	m_OemName(msg(viewer? lng::MViewF8DOS : lng::MEditF8DOS)),
 	m_UtfName(L"UTF-8"sv)
 {
-	uintptr_t defcp = viewer? Global->Opt->ViOpt.DefaultCodePage : Global->Opt->EdOpt.DefaultCodePage;
+	uintptr_t defcp = encoding::codepage::normalise(viewer? Global->Opt->ViOpt.DefaultCodePage : Global->Opt->EdOpt.DefaultCodePage);
 
 	const auto& cps = (viewer? Global->Opt->ViOpt.strF8CPs : Global->Opt->EdOpt.strF8CPs).Get();
 	if (cps != L"-1"sv)
@@ -837,6 +844,9 @@ F8CP::F8CP(bool viewer):
 		std::unordered_set<uintptr_t> used_cps;
 		for(const auto& i: enum_tokens(cps, L",;"sv))
 		{
+			if (i.empty())
+				continue;
+
 			uintptr_t cp;
 			if (equal_icase(i, L"ansi"sv) || equal_icase(i, L"acp"sv) || equal_icase(i, L"win"sv))
 				cp = encoding::codepage::ansi();
@@ -852,7 +862,7 @@ F8CP::F8CP(bool viewer):
 					cp = 0;
 			}
 
-			if (cp && codepages::IsCodePageSupported(cp, viewer ? 2:20) && !contains(used_cps, cp))
+			if (cp && IsCodePageSupported(cp, viewer? 2 : 20) && !used_cps.contains(cp))
 			{
 				m_F8CpOrder.emplace_back(cp);
 				used_cps.emplace(cp);
@@ -876,7 +886,7 @@ F8CP::F8CP(bool viewer):
 
 uintptr_t F8CP::NextCP(uintptr_t cp) const
 {
-	auto curr = std::find(ALL_CONST_RANGE(m_F8CpOrder), cp);
+	auto curr = std::ranges::find(m_F8CpOrder, cp);
 	return curr != m_F8CpOrder.cend() && ++curr != m_F8CpOrder.cend()? *curr : *m_F8CpOrder.cbegin();
 }
 

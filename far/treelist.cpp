@@ -69,6 +69,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "colormix.hpp"
 #include "plugins.hpp"
 #include "manager.hpp"
+#include "mix.hpp"
 #include "lang.hpp"
 #include "keybar.hpp"
 #include "strmix.hpp"
@@ -84,6 +85,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 // Platform:
+#include "platform.hpp"
 #if defined(TREEFILE_PROJECT)
 #include "platform.env.hpp"
 #endif
@@ -142,7 +144,7 @@ string ConvertTemplateTreeName(string_view const strTemplate, string_view const 
 	string Str(strTemplate);
 
 	replace(Str, L"%D"sv, D);
-	replace(Str, L"%SN"sv, format(FSTR(L"{:04X}-{:04X}"sv), extract_integer<WORD, 1>(SN), extract_integer<WORD, 0>(SN)));
+	replace(Str, L"%SN"sv, far::format(L"{:04X}-{:04X}"sv, extract_integer<WORD, 1>(SN), extract_integer<WORD, 0>(SN)));
 	replace(Str, L"%L"sv, L);
 	replace(Str, L"%SR"sv, SR);
 	replace(Str, L"%SH"sv, SH);
@@ -293,13 +295,13 @@ static bool GetCacheTreeName(string_view const Root, string& strName, bool const
 		// BUGBUG check result
 		if (!os::fs::create_directory(strFolderName))
 		{
-			LOGWARNING(L"create_directory({}): {}"sv, strFolderName, last_error());
+			LOGWARNING(L"create_directory({}): {}"sv, strFolderName, os::last_error());
 		}
 
 		// BUGBUG check result
 		if (!os::fs::set_file_attributes(strFolderName, Global->Opt->Tree.TreeFileAttr))
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, strFolderName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, strFolderName, os::last_error());
 		}
 	}
 
@@ -316,8 +318,8 @@ static bool GetCacheTreeName(string_view const Root, string& strName, bool const
 			AddEndSlash(strRemoteName);
 	}
 
-	std::replace(ALL_RANGE(strRemoteName), path::separator, L'_');
-	strName = format(FSTR(L"{}\\{}.{:X}.{}.{}"sv), strFolderName, strVolumeName, dwVolumeSerialNumber, strFileSystemName, strRemoteName);
+	std::ranges::replace(strRemoteName, path::separator, L'_');
+	strName = far::format(L"{}\\{}.{:X}.{}.{}"sv, strFolderName, strVolumeName, dwVolumeSerialNumber, strFileSystemName, strRemoteName);
 	return true;
 }
 
@@ -361,7 +363,7 @@ public:
 	void SetTreeName(string_view const Name) { m_TreeName = Name; }
 
 private:
-	using cache_set = std::set<string, string_sort::less_t>;
+	using cache_set = std::set<string, string_sort::less_icase_t>;
 
 public:
 	using const_iterator = cache_set::const_iterator;
@@ -643,7 +645,7 @@ public:
 		{
 			{ DI_DOUBLEBOX, {{ 3, 1 }, { DlgW - 4, DlgH - 2 }}, DIF_NONE,      msg(lng::MTreeTitle), },
 			{ DI_TEXT,      {{ 5, 2 }, { DlgW - 6,        2 }}, DIF_NONE,      msg(lng::MReadingTree) },
-			{ DI_TEXT,      {{ 5, 3 }, { DlgW - 6,        3 }}, DIF_NONE,      {} },
+			{ DI_TEXT,      {{ 5, 3 }, { DlgW - 6,        3 }}, DIF_SHOWAMPERSAND, {} },
 		});
 
 		init(ProgressDlgItems, { -1, -1, DlgW, DlgH });
@@ -657,7 +659,7 @@ public:
 
 static auto OpenTreeFile(string_view const Name, bool const Writable)
 {
-	return os::fs::file(Name, Writable? FILE_WRITE_DATA : FILE_READ_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, Writable? OPEN_ALWAYS : OPEN_EXISTING);
+	return os::fs::file(Name, Writable? FILE_WRITE_DATA : FILE_READ_DATA, os::fs::file_share_read, nullptr, Writable? OPEN_ALWAYS : OPEN_EXISTING);
 }
 
 static bool MustBeCached(string_view const Root)
@@ -700,7 +702,7 @@ static void ReadLines(const os::fs::file& TreeFile, function_ref<void(string_vie
 	std::istream Stream(&StreamBuffer);
 	Stream.exceptions(Stream.badbit | Stream.failbit);
 
-	for (const auto& i: enum_lines(Stream, CP_UNICODE))
+	for (const auto& i: enum_lines(Stream, CP_UTF16LE))
 	{
 		if (i.Str.empty() || !path::is_separator(i.Str.front()))
 			continue;
@@ -709,15 +711,14 @@ static void ReadLines(const os::fs::file& TreeFile, function_ref<void(string_vie
 	}
 }
 
-template<class string_type, class container_type, class opener_type>
-static void WriteTree(string_type& Name, const container_type& Container, const opener_type& Opener, size_t offset)
+static void WriteTree(auto& Name, std::ranges::range auto const& Container, const auto& Opener, size_t offset)
 {
 	// получим и сразу сбросим атрибуты (если получится)
 	const auto SavedAttributes = os::fs::get_file_attributes(Name);
 
 	if (SavedAttributes != INVALID_FILE_ATTRIBUTES && !os::fs::set_file_attributes(Name, FILE_ATTRIBUTE_NORMAL)) //BUGBUG
 	{
-		LOGWARNING(L"set_file_attributes({}): {}"sv, Name, last_error());
+		LOGWARNING(L"set_file_attributes({}): {}"sv, Name, os::last_error());
 	}
 
 	std::optional<error_state_ex> ErrorState;
@@ -729,7 +730,7 @@ static void WriteTree(string_type& Name, const container_type& Container, const 
 			os::fs::filebuf StreamBuffer(TreeFile, std::ios::out);
 			std::ostream Stream(&StreamBuffer);
 			Stream.exceptions(Stream.badbit | Stream.failbit);
-			encoding::writer Writer(Stream, CP_UNICODE, false);
+			encoding::writer Writer(Stream, CP_UTF16LE, false);
 			const auto Eol = eol::system.str();
 
 			for (const auto& i: Container)
@@ -741,10 +742,10 @@ static void WriteTree(string_type& Name, const container_type& Container, const 
 
 			if (SavedAttributes != INVALID_FILE_ATTRIBUTES && !os::fs::set_file_attributes(Name, SavedAttributes)) //BUGBUG
 			{
-				LOGWARNING(L"set_file_attributes({}): {}"sv, Name, last_error());
+				LOGWARNING(L"set_file_attributes({}): {}"sv, Name, os::last_error());
 			}
 		}
-		catch (const far_exception& e)
+		catch (far_exception const& e)
 		{
 			ErrorState = e;
 		}
@@ -754,14 +755,14 @@ static void WriteTree(string_type& Name, const container_type& Container, const 
 	}
 	else
 	{
-		ErrorState = last_error();
+		ErrorState = os::last_error();
 	}
 
 	if (ErrorState)
 	{
 		if (const auto CacheName = TreeCache().GetTreeName(); !os::fs::delete_file(CacheName)) // BUGBUG
 		{
-			LOGWARNING(L"delete_file({}): {}"sv, CacheName, last_error());
+			LOGWARNING(L"delete_file({}): {}"sv, CacheName, os::last_error());
 		}
 
 		if (!Global->WindowManager->ManagerIsDown())
@@ -832,7 +833,7 @@ bool TreeList::ReadTree()
 		return false;
 	}
 
-	std::sort(ALL_RANGE(m_ListData), string_sort::less);
+	std::ranges::sort(m_ListData, string_sort::less);
 
 	if (!FillLastData())
 		return false;
@@ -924,7 +925,7 @@ bool TreeList::FillLastData()
 	};
 
 	const auto RootLength = m_Root.empty()? 0 : m_Root.size()-1;
-	const range Range(m_ListData.begin() + 1, m_ListData.end());
+	const auto Range = m_ListData | std::views::drop(1);
 	FOR_RANGE(Range, i)
 	{
 		const auto Pos = i->strName.rfind(path::separator);
@@ -937,7 +938,7 @@ bool TreeList::FillLastData()
 		auto SubDirPos = i;
 		int Last = 1;
 
-		const range SubRange(i + 1, Range.end());
+		const std::ranges::subrange SubRange(i + 1, Range.end());
 		FOR_RANGE(SubRange, j)
 		{
 			if (CountSlash(j->strName, RootLength) > Depth)
@@ -953,7 +954,7 @@ bool TreeList::FillLastData()
 			}
 		}
 
-		for (auto& j: range(i, SubDirPos + 1))
+		for (auto& j: std::ranges::subrange(i, SubDirPos + 1))
 		{
 			if (Depth > j.Last.size())
 			{
@@ -1210,21 +1211,21 @@ bool TreeList::ProcessKey(const Manager::Key& Key)
 		case(KEY_MSWHEEL_UP | KEY_ALT):
 		case(KEY_MSWHEEL_UP | KEY_RALT):
 		{
-			Scroll(LocalKey & (KEY_ALT | KEY_RALT)? -1 : static_cast<int>(-Global->Opt->MsWheelDelta));
+			Scroll(-static_cast<int>((LocalKey == KEY_MSWHEEL_UP? get_wheel_scroll_lines(Global->Opt->MsWheelDelta) : 1) * Key.NumberOfWheelEvents()));
 			return true;
 		}
 		case KEY_MSWHEEL_DOWN:
 		case(KEY_MSWHEEL_DOWN | KEY_ALT):
 		case(KEY_MSWHEEL_DOWN | KEY_RALT):
 		{
-			Scroll(LocalKey& (KEY_ALT | KEY_RALT)? 1 : static_cast<int>(Global->Opt->MsWheelDelta));
+			Scroll(static_cast<int>((LocalKey == KEY_MSWHEEL_DOWN? get_wheel_scroll_lines(Global->Opt->MsWheelDelta) : 1) * Key.NumberOfWheelEvents()));
 			return true;
 		}
 		case KEY_MSWHEEL_LEFT:
 		case(KEY_MSWHEEL_LEFT | KEY_ALT):
 		case(KEY_MSWHEEL_LEFT | KEY_RALT):
 		{
-			const auto Roll = LocalKey & (KEY_ALT | KEY_RALT)? 1 : static_cast<int>(Global->Opt->MsHWheelDelta);
+			const auto Roll = (LocalKey == KEY_MSWHEEL_LEFT? get_wheel_scroll_chars(Global->Opt->MsHWheelDelta) : 1) * Key.NumberOfWheelEvents();
 			repeat(Roll, [&]{ ProcessKey(Manager::Key(KEY_LEFT));});
 			return true;
 		}
@@ -1232,7 +1233,7 @@ bool TreeList::ProcessKey(const Manager::Key& Key)
 		case(KEY_MSWHEEL_RIGHT | KEY_ALT):
 		case(KEY_MSWHEEL_RIGHT | KEY_RALT):
 		{
-			const auto Roll = LocalKey & (KEY_ALT | KEY_RALT)? 1 : static_cast<int>(Global->Opt->MsHWheelDelta);
+			const auto Roll = (LocalKey == KEY_MSWHEEL_RIGHT? get_wheel_scroll_chars(Global->Opt->MsHWheelDelta) : 1) * Key.NumberOfWheelEvents();
 			repeat(Roll, [&]{ ProcessKey(Manager::Key(KEY_RIGHT));});
 			return true;
 		}
@@ -1350,11 +1351,11 @@ int TreeList::GetNextNavPos() const
 {
 	int NextPos=m_CurFile;
 
-	if (static_cast<size_t>(m_CurFile) + 1 < m_ListData.size())
+	if (static_cast<size_t>(m_CurFile + 1) < m_ListData.size())
 	{
 		const auto CurDepth = m_ListData[m_CurFile].Depth;
 
-		for (const auto& I: irange(m_CurFile + 1, m_ListData.size()))
+		for (const auto I: std::views::iota(static_cast<size_t>(m_CurFile + 1), m_ListData.size()))
 		{
 			if (m_ListData[I].Depth == CurDepth)
 			{
@@ -1581,11 +1582,11 @@ bool TreeList::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 		if (m_ListData.empty())
 			return true;
 
-		if (((MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) &&
-		        MouseEvent->dwEventFlags==DOUBLE_CLICK) ||
-		        ((MouseEvent->dwButtonState & RIGHTMOST_BUTTON_PRESSED) &&
-		         !MouseEvent->dwEventFlags) ||
-		        (OldFile!=m_CurFile && Global->Opt->Tree.AutoChangeFolder && !m_ModalMode))
+		if (
+			((MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) && MouseEvent->dwEventFlags == DOUBLE_CLICK) ||
+			((MouseEvent->dwButtonState & RIGHTMOST_BUTTON_PRESSED) && IsMouseButtonEvent(MouseEvent->dwEventFlags)) ||
+			(OldFile!=m_CurFile && Global->Opt->Tree.AutoChangeFolder && !m_ModalMode)
+		)
 		{
 			const auto control = MouseEvent->dwControlKeyState & (SHIFT_PRESSED | LEFT_ALT_PRESSED | LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED | RIGHT_CTRL_PRESSED);
 
@@ -1920,7 +1921,7 @@ void TreeList::ReadCache(string_view const TreeRoot)
 	catch (std::exception const& e)
 	{
 		ClearCache();
-		LOGWARNING(L"{}"sv, e);
+		LOGERROR(L"{}"sv, e);
 		return;
 	}
 }
@@ -1970,7 +1971,7 @@ bool TreeList::GoToFile(const string_view Name, const bool OnlyPartName)
 
 long TreeList::FindFile(const string_view Name, const bool OnlyPartName)
 {
-	const auto ItemIterator = std::find_if(CONST_RANGE(m_ListData, i)
+	const auto ItemIterator = std::ranges::find_if(m_ListData, [&](TreeItem const& i)
 	{
 		return equal_icase(Name, OnlyPartName? PointToName(i.strName) : i.strName);
 	});
@@ -1987,7 +1988,7 @@ long TreeList::FindNext(int StartPos, string_view const Name)
 {
 	if (static_cast<size_t>(StartPos) < m_ListData.size())
 	{
-		const auto ItemIterator = std::find_if(CONST_RANGE(m_ListData, i)
+		const auto ItemIterator = std::ranges::find_if(m_ListData, [&](TreeItem const& i)
 		{
 			return CmpName(Name, i.strName, true) && !IsParentDirectory(i.strName);
 		});

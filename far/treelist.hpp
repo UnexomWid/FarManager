@@ -57,7 +57,7 @@ enum
 
 class TreeList final: public Panel
 {
-	struct private_tag {};
+	struct private_tag { explicit private_tag() = default; };
 
 public:
 	struct TreeItem
@@ -82,7 +82,7 @@ public:
 		{
 		}
 
-		operator string_view() const { return strName; }
+		explicit(false) operator string_view() const { return strName; }
 	};
 
 	static tree_panel_ptr create(window_ptr Owner, int ModalMode = 0);

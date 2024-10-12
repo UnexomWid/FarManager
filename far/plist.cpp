@@ -46,14 +46,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "message.hpp"
 #include "interf.hpp"
 #include "imports.hpp"
-#include "string_sort.hpp"
-#include "exception.hpp"
 #include "exception_handler.hpp"
 #include "console.hpp"
 #include "keyboard.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.process.hpp"
 
 // Common:
@@ -73,7 +72,13 @@ struct menu_data
 
 struct ProcInfo
 {
-	std::vector<std::pair<HWND, DWORD>> Windows;
+	struct proc_item
+	{
+		HWND Window;
+		DWORD Pid;
+	};
+
+	std::vector<proc_item> Windows;
 	std::exception_ptr ExceptionPtr;
 };
 
@@ -134,11 +139,8 @@ static BOOL CALLBACK EnumWindowsProc(HWND const Window, LPARAM const Param)
 		Info.Windows.emplace_back(Window, Pid);
 		return true;
 	},
-	[&]
-	{
-		SAVE_EXCEPTION_TO(Info.ExceptionPtr);
-		return false;
-	});
+	save_exception_and_return<false>(Info.ExceptionPtr)
+	);
 }
 
 static void AddMenuItem(HWND const Window, DWORD const Pid, size_t const PidWidth, bool const ShowImage, vmenu2_ptr const& Menu)
@@ -162,8 +164,7 @@ static void AddMenuItem(HWND const Window, DWORD const Pid, size_t const PidWidt
 
 	const auto Self = Pid == GetCurrentProcessId() || Window == console.GetWindow();
 
-	MenuItemEx NewItem(format(FSTR(L"{:{}} {} {}"sv), Pid, PidWidth, BoxSymbols[BS_V1], MenuItem), Self? MIF_CHECKED : MIF_NONE);
-	// for sorting
+	MenuItemEx NewItem(far::format(L"{:{}} {} {}"sv, Pid, PidWidth, BoxSymbols[BS_V1], MenuItem), Self? MIF_CHECKED : MIF_NONE);
 	NewItem.ComplexUserData = menu_data{ WindowTitle, Pid, Window };
 	Menu->AddItem(NewItem);
 }
@@ -191,24 +192,19 @@ void ShowProcessList()
 		ProcList->clear();
 		Info.Windows.clear();
 
-		if (!EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&Info)))
+		if (!EnumWindows(EnumWindowsProc, std::bit_cast<LPARAM>(&Info)))
 		{
 			rethrow_if(Info.ExceptionPtr);
 			return false;
 		}
 
-		const auto MaxPid = std::max_element(ALL_CONST_RANGE(Info.Windows), [](const auto& a, const auto& b) { return a.second < b.second; })->second;
+		const auto MaxPid = std::ranges::max_element(Info.Windows, {}, &ProcInfo::proc_item::Pid)->Pid;
 		const auto PidWidth = static_cast<size_t>(std::log10(MaxPid)) + 1;
 
-		for (const auto& [Window, Pid]: Info.Windows)
+		for (const auto& i: Info.Windows)
 		{
-			AddMenuItem(Window, Pid, PidWidth, ShowImage, ProcList);
+			AddMenuItem(i.Window, i.Pid, PidWidth, ShowImage, ProcList);
 		}
-
-		ProcList->SortItems([](const MenuItemEx& a, const MenuItemEx& b, SortItemParam&)
-		{
-			return string_sort::less(std::any_cast<const menu_data&>(a.ComplexUserData).Title, std::any_cast<const menu_data&>(b.ComplexUserData).Title);
-		});
 
 		return true;
 	};
@@ -243,10 +239,9 @@ void ShowProcessList()
 						},
 						{ lng::MKillProcessKill, lng::MCancel }) == message_result::first_button)
 					{
-						const os::handle Process(OpenProcess(PROCESS_TERMINATE, FALSE, MenuData->Pid));
-						if (!Process || !TerminateProcess(Process.native_handle(), ERROR_PROCESS_ABORTED))
+						if (!os::process::terminate_other(MenuData->Pid))
 						{
-							const auto ErrorState = last_error();
+							const auto ErrorState = os::last_error();
 
 							Message(MSG_WARNING, ErrorState,
 								msg(lng::MKillProcessTitle),

@@ -39,9 +39,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.concurrency.hpp"
 
 // Common:
+#include "common/preprocessor.hpp"
 #include "common/singleton.hpp"
 #include "common/string_utils.hpp"
-#include "common/type_traits.hpp"
 
 // External:
 
@@ -68,23 +68,27 @@ class wm_listener;
 
 namespace detail
 {
+	template<typename type>
+	concept with_payload = requires(type t, std::any a)
+	{
+		t(a);
+	};
+
+	template<typename type>
+	concept without_payload = requires(type t)
+	{
+		t();
+	};
+
 	class event_handler: public std::function<void(const std::any&)>
 	{
-		template<typename T>
-		using with_payload = decltype(std::declval<T&>()(std::declval<std::any>()));
-
-		template<typename T>
-		using without_payload = decltype(std::declval<T&>()());
-
 	public:
-		template<typename callable_type, REQUIRES(is_detected_v<with_payload, callable_type>)>
-		explicit event_handler(callable_type&& Handler):
+		explicit event_handler(with_payload auto&& Handler):
 			function(FWD(Handler))
 		{
 		}
 
-		template<typename callable_type, REQUIRES(is_detected_v<without_payload, callable_type>)>
-		explicit event_handler(callable_type&& Handler):
+		explicit event_handler(without_payload auto&& Handler):
 			function([Handler = FWD(Handler)](const std::any&) { Handler(); })
 		{
 		}
@@ -107,8 +111,17 @@ public:
 	void notify(string_view EventId, std::any&& Payload = {});
 	bool dispatch();
 
+	void enable_power_notifications();
+	void disable_power_notifications();
+
 private:
-	using message_queue = os::synced_queue<std::pair<string, std::any>>;
+	struct message
+	{
+		string Id;
+		std::any Payload;
+	};
+
+	using message_queue = std::list<message>;
 
 	message_manager();
 	~message_manager();
@@ -117,6 +130,7 @@ private:
 	void commit_remove();
 
 	os::concurrency::critical_section
+		m_QueueLock,
 		m_PendingLock,
 		m_ActiveLock;
 
@@ -134,16 +148,19 @@ private:
 class listener: noncopyable
 {
 public:
-	template<class id_type, typename callable_type>
-	listener(const id_type& EventId, const callable_type& EventHandler):
+	struct scope
+	{
+		string_view ScopeName;
+	};
+
+	listener(const auto& EventId, const auto& EventHandler):
 		m_Handler(EventHandler),
 		m_Iterator(message_manager::instance().subscribe(EventId, m_Handler))
 	{
 	}
 
-	template<typename callable_type>
-	explicit listener(const callable_type& EventHandler):
-		listener(CreateEventName(), EventHandler)
+	explicit listener(scope const Scope, auto const& EventHandler):
+		listener(CreateEventName(Scope.ScopeName), EventHandler)
 	{
 	}
 
@@ -158,7 +175,7 @@ public:
 	}
 
 private:
-	static string CreateEventName();
+	static string CreateEventName(string_view ScopeName);
 
 	detail::event_handler m_Handler;
 	message_manager::handlers_map::iterator m_Iterator;

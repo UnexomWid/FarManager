@@ -38,21 +38,75 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Platform:
 
 // Common:
+#include "common/function_ref.hpp"
 
 // External:
 
 //----------------------------------------------------------------------------
 
+class map_file;
+
 namespace os::debug
 {
-	bool debugger_present();
-	void breakpoint(bool Always = true);
+	// TODO: std
+	bool is_debugger_present();
+	void breakpoint();
+	void breakpoint_if_debugging();
+
 	void print(const wchar_t* Str);
 	void print(string const& Str);
 	void set_thread_name(const wchar_t* Name);
 	void set_thread_name(string const& Name);
 	string get_thread_name(HANDLE ThreadHandle);
-	std::vector<uintptr_t> current_stack(size_t FramesToSkip = 0, size_t FramesToCapture = std::numeric_limits<size_t>::max());
+
+	struct stack_frame
+	{
+		uintptr_t Address;
+		DWORD InlineContext;
+	};
+
+	constexpr NTSTATUS EH_EXCEPTION_NUMBER = 0xE06D7363; // 'msc'
+
+	EXCEPTION_POINTERS exception_information();
+	EXCEPTION_POINTERS fake_exception_information(unsigned Code, bool Continuable = false);
+
+	// Symbols should be initialized before calling these.
+	// Use tracer.*, they do exactly that.
+	std::vector<stack_frame> current_stacktrace(size_t FramesToSkip = 0, size_t FramesToCapture = std::numeric_limits<size_t>::max());
+	std::vector<stack_frame> stacktrace(CONTEXT ContextRecord, HANDLE ThreadHandle);
+	std::vector<stack_frame> exception_stacktrace();
+
+	bool is_inline_frame(DWORD InlineContext);
+
+	namespace symbols
+	{
+		struct symbol
+		{
+			string_view Name;
+			size_t Displacement{};
+		};
+
+		struct location
+		{
+			string_view FileName;
+			std::optional<size_t> Line;
+			size_t Displacement{};
+		};
+
+		bool initialize(string_view Module);
+
+		void clean();
+
+		void get(
+			string_view ModuleName,
+			std::span<stack_frame const> BackTrace,
+			std::unordered_map<uintptr_t, map_file>& MapFiles,
+			function_ref<void(uintptr_t, string_view, bool, symbol, location)> Consumer
+		);
+	}
+
+	void crt_report_to_ui();
+	void crt_report_to_stderr();
 }
 
 #endif // PLATFORM_DEBUG_HPP_8453E69F_3955_416D_BB64_A3A88D3D1D8D

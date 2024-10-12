@@ -43,7 +43,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Common:
 #include "common/bytes_view.hpp"
 #include "common/preprocessor.hpp"
-#include "common/range.hpp"
 
 // External:
 
@@ -58,14 +57,12 @@ namespace sqlite
 class far_sqlite_exception final: public far_exception
 {
 public:
-	template<typename... args>
-	explicit far_sqlite_exception(int ErrorCode, args&&... Args) :
-		far_exception(FWD(Args)...),
+	explicit far_sqlite_exception(int const ErrorCode, string_view const Message, source_location const& Location = source_location::current()) :
+		far_exception(Message, true, Location),
 		m_ErrorCode(ErrorCode)
 	{}
 
-	bool is_constaint_unique() const;
-	bool is_corrupt_index() const;
+	bool is_constraint_unique() const;
 
 private:
 	int m_ErrorCode;
@@ -115,8 +112,7 @@ protected:
 		bool Step() const;
 		void Execute() const;
 
-		template<typename... args>
-		auto& Bind(args&&... Args)
+		auto& Bind(auto&&... Args)
 		{
 			(..., BindImpl(FWD(Args)));
 			return *this;
@@ -167,16 +163,15 @@ protected:
 		assert(m_Statements.empty());
 
 		m_Statements.reserve(N);
-		std::transform(ALL_CONST_RANGE(Init), std::back_inserter(m_Statements), [this](const auto& i)
+		std::ranges::transform(Init, std::back_inserter(m_Statements), [this](const auto& i)
 		{
 			assert(static_cast<size_t>(i.first) == m_Statements.size());
 			return create_stmt(i.second);
 		});
 	}
 
-	void Exec(std::string const& Command) const;
 	void Exec(std::string_view Command) const;
-	void Exec(span<std::string_view const> Commands) const;
+	void Exec(std::span<std::string_view const> Commands) const;
 	void SetWALJournalingMode() const;
 	void EnableForeignKeysConstraints() const;
 
@@ -186,8 +181,7 @@ protected:
 	static void KeepStatement(auto_statement& Stmt) { (void)Stmt.release(); }
 
 	// No forwarding here - ExecuteStatement is atomic so we don't have to deal with lifetimes
-	template<typename... args>
-	auto ExecuteStatement(size_t Index, const args&... Args) const
+	auto ExecuteStatement(size_t Index, const auto&... Args) const
 	{
 		return AutoStatement(Index)->Bind(Args...).Execute();
 	}
@@ -201,8 +195,7 @@ protected:
 		}
 
 #define FORWARD_FUNCTION(FunctionName) \
-		template<typename... args> \
-		decltype(auto) FunctionName(args&&... Args) const \
+		decltype(auto) FunctionName(auto&&... Args) const \
 		{ \
 			return m_Db->FunctionName(FWD(Args)...); \
 		}
@@ -214,6 +207,7 @@ protected:
 		FORWARD_FUNCTION(add_nocase_collation)
 		FORWARD_FUNCTION(add_numeric_collation)
 		FORWARD_FUNCTION(ScopedTransaction)
+		FORWARD_FUNCTION(create_stmt)
 
 #undef FORWARD_FUNCTION
 
@@ -231,7 +225,6 @@ private:
 	database_ptr Open(string_view Path, busy_handler BusyHandler, bool WAL);
 	void Close();
 
-	void initialise() const;
 	void add_nocase_collation() const;
 	void add_numeric_collation() const;
 
@@ -242,7 +235,6 @@ private:
 	SQLiteStmt m_stmt_BeginTransaction;
 	SQLiteStmt m_stmt_EndTransaction;
 	mutable std::vector<SQLiteStmt> m_Statements;
-	struct init{} m_Init;
 	std::atomic_size_t m_ActiveTransactions{};
 };
 

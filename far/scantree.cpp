@@ -43,10 +43,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "pathmix.hpp"
 #include "cvtname.hpp"
 #include "global.hpp"
-#include "exception.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -110,9 +110,9 @@ void ScanTree::SetFindPath(string_view const Path, string_view const Mask)
 	strFindPathOriginal = Path;
 	AddEndSlash(strFindPathOriginal);
 
-	const auto FullPath = NTPath(ConvertNameToFull(Path));
+	const auto FullPath = nt_path(ConvertNameToFull(Path));
 
-	strFindPath = NTPath(ConvertNameToReal(FullPath));
+	strFindPath = nt_path(ConvertNameToReal(FullPath));
 
 	scantree_item Item;
 	Item.RealPath = strFindPath;
@@ -204,7 +204,7 @@ bool ScanTree::GetNextName(os::fs::find_data& fdata,string &strFullName)
 				// BUGBUG check result
 				if (!os::fs::get_find_data(strFindPath, fdata))
 				{
-					LOGWARNING(L"get_find_data({}): {}"sv, strFindPath, last_error());
+					LOGWARNING(L"get_find_data({}): {}"sv, strFindPath, os::last_error());
 				}
 
 			}
@@ -229,10 +229,10 @@ bool ScanTree::GetNextName(os::fs::find_data& fdata,string &strFullName)
 			auto RealPath = path::join(ScanItems.back().RealPath, fdata.FileName);
 
 			if (is_link)
-				RealPath = NTPath(ConvertNameToReal(RealPath));
+				RealPath = nt_path(ConvertNameToReal(RealPath));
 
 			//recursive symlinks guard
-			if (!contains(ScanItems.back().ActiveDirectories, RealPath))
+			if (!ScanItems.back().ActiveDirectories.contains(RealPath))
 			{
 				CutToSlash(strFindPath);
 				path::append(strFindPath, fdata.FileName, strFindMask);
@@ -308,7 +308,7 @@ bool ScanTree::IsDirSearchDone() const
 
 bool ScanTree::InsideReparsePoint() const
 {
-	return std::any_of(ALL_CONST_RANGE(ScanItems), [](scantree_item const& i)
+	return std::ranges::any_of(ScanItems, [](scantree_item const& i)
 	{
 		return i.Flags.Check(TREE_ITEM_INSIDE_REPARSE_POINT);
 	});

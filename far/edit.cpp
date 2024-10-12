@@ -103,7 +103,7 @@ private:
 void ColorItem::SetOwner(const UUID& Value)
 {
 	static std::unordered_set<UUID> UuidSet;
-	Owner = &*UuidSet.emplace(Value).first;
+	Owner = std::to_address(UuidSet.emplace(Value).first);
 }
 
 void ColorItem::SetColor(const FarColor& Value)
@@ -145,23 +145,18 @@ void Edit::DisplayObject()
 	   при DropDownBox курсор выключаем
 	   не знаю даже - попробовал но не очень красиво вышло */
 	if (m_Flags.Check(FEDITLINE_DROPDOWNBOX))
-		::SetCursorType(false, 10);
+		HideCursor();
 	else
 	{
-		if (m_Flags.Check(FEDITLINE_OVERTYPE))
+		::SetCursorType(true, [this]
 		{
-			const auto NewCursorSize = IsConsoleFullscreen()?
-			                  (Global->Opt->CursorSize[3]? static_cast<int>(Global->Opt->CursorSize[3]) : 99):
-			                  (Global->Opt->CursorSize[2]? static_cast<int>(Global->Opt->CursorSize[2]) : 99);
-			::SetCursorType(true, GetCursorSize() == -1?NewCursorSize:GetCursorSize());
-		}
-		else
-		{
-			const auto NewCursorSize = IsConsoleFullscreen()?
-			                  (Global->Opt->CursorSize[1]? static_cast<int>(Global->Opt->CursorSize[1]) : 10):
-			                  (Global->Opt->CursorSize[0]? static_cast<int>(Global->Opt->CursorSize[0]) : 10);
-			::SetCursorType(true, GetCursorSize() == -1?NewCursorSize:GetCursorSize());
-		}
+			if (const auto Size = GetCursorSize(); Size != -1)
+				return Size;
+
+			const auto FullScreenShift = IsConsoleFullscreen()? 1 : 0;
+			const auto OvertypeShift = m_Flags.Check(FEDITLINE_OVERTYPE)? 2 : 0;
+			return static_cast<int>(Global->Opt->CursorSize[FullScreenShift + OvertypeShift]);
+		}());
 	}
 
 	MoveCursor({ m_Where.left + GetLineCursorPos() - LeftPos, m_Where.top });
@@ -216,7 +211,7 @@ int Edit::GetNextCursorPos(int Position,int Where) const
 
 		if (!PosChanged)
 		{
-			const auto It = std::find_if(ALL_CONST_RANGE(Mask), CheckCharMask);
+			const auto It = std::ranges::find_if(Mask, CheckCharMask);
 			if (It != Mask.cend())
 			{
 				Result = It - Mask.cbegin();
@@ -288,8 +283,6 @@ void Edit::FastShow(const ShowInfo* Info)
 
 	const size_t EditLength = ObjWidth();
 
-	const size_t RealRight = VisualToReal.get(static_cast<int>(EditLength) + LeftPos) - RealLeftPos;
-
 	string OutStr;
 	OutStr.reserve(EditLength);
 
@@ -347,33 +340,37 @@ void Edit::FastShow(const ShowInfo* Info)
 		{
 			const auto Cr = L'♪', Lf = L'◙';
 
-			if (m_Eol == eol::mac)
+			switch (get_eol())
 			{
+			case eol::eol_type::none:
+				break;
+
+			case eol::eol_type::mac:
 				OutStr.push_back(Cr);
-			}
-			else if (m_Eol == eol::unix)
-			{
+				break;
+
+			case eol::eol_type::unix:
 				OutStr.push_back(Lf);
-			}
-			else if (m_Eol == eol::win)
-			{
+				break;
+
+			case eol::eol_type::win:
 				OutStr.push_back(Cr);
 				if(OutStr.size() < EditLength)
-				{
 					OutStr.push_back(Lf);
-				}
-			}
-			else if (m_Eol == eol::bad_win)
-			{
+				break;
+
+			case eol::eol_type::bad_win:
 				OutStr.push_back(Cr);
 				if(OutStr.size() < EditLength)
 				{
 					OutStr.push_back(Cr);
 					if(OutStr.size() < EditLength)
-					{
 						OutStr.push_back(Lf);
-					}
 				}
+				break;
+
+			default:
+				std::unreachable();
 			}
 		}
 
@@ -386,11 +383,10 @@ void Edit::FastShow(const ShowInfo* Info)
 	// Basic color
 	SetColor(GetNormalColor());
 
-	const auto MaxRight = std::max(RealRight, EditLength);
-	if (OutStr.size() < MaxRight)
-		OutStr.append(MaxRight - OutStr.size(), L' ');
+	const auto VisualTextLength = Text(OutStr, EditLength);
 
-	Text(OutStr, EditLength);
+	if (VisualTextLength < EditLength)
+		Text(string(EditLength - VisualTextLength, L' '), EditLength);
 
 	if (m_Flags.Check(FEDITLINE_DROPDOWNBOX))
 	{
@@ -402,14 +398,20 @@ void Edit::FastShow(const ShowInfo* Info)
 		if (m_Flags.Check(FEDITLINE_EDITORMODE))
 		{
 			// Editor highlight
-			ApplyColor(XPos, FocusedLeftPos, RealToVisual);
+			if (const auto Colors = GetEditor()->GetColors(this); Colors)
+				ApplyColor(*Colors, XPos, FocusedLeftPos, RealToVisual);
 		}
 
 		if (TabSelStart == -1)
 		{
 			if (m_Flags.Check(FEDITLINE_CLEARFLAG))
 			{
-				Global->ScrBuf->ApplyColor(m_Where, GetUnchangedColor());
+				// BUGBUG multiline
+				auto UnchangedArea = m_Where;
+				if (VisualTextLength < static_cast<size_t>(UnchangedArea.width()))
+					UnchangedArea.right = static_cast<short>(UnchangedArea.left + VisualTextLength - 1);
+
+				Global->ScrBuf->ApplyColor(UnchangedArea, GetUnchangedColor());
 			}
 		}
 		else
@@ -449,7 +451,7 @@ bool Edit::ProcessInsPath(unsigned int Key,int PrevSelStart,int PrevSelEnd)
 
 	if (Key >= KEY_RCTRL0 && Key <= KEY_RCTRL9)
 	{
-		if (!Shortcuts(Key - KEY_RCTRL0).Get(Data))
+		if (!Shortcuts::Get(Key - KEY_RCTRL0, Data))
 			return false;
 		Data.Folder = os::env::expand(Data.Folder);
 	}
@@ -485,10 +487,10 @@ long long Edit::VMProcess(int OpCode, void* vParam, long long iParam)
 		case MCODE_V_ITEMCOUNT:
 			return m_Str.size();
 		case MCODE_V_CURPOS:
-			return GetLineCursorPos()+1;
+			return m_CurPos+1;
 		case MCODE_F_EDITOR_SEL:
 		{
-			const auto Action = static_cast<int>(reinterpret_cast<intptr_t>(vParam));
+			const auto Action = static_cast<int>(std::bit_cast<intptr_t>(vParam));
 			if (Action) m_Flags.Clear(FEDITLINE_CLEARFLAG);
 
 			switch (Action)
@@ -888,7 +890,8 @@ bool Edit::ProcessKey(const Manager::Key& Key)
 			SetPrevCurPos(m_CurPos);
 			do
 			{
-				--m_CurPos;
+				const auto Decrement = m_CurPos > 1 && m_Str.size() >= m_CurPos && is_valid_surrogate_pair(string_view(m_Str).substr(m_CurPos - 2))? 2 : 1;
+				m_CurPos -= Decrement;
 			}
 			while (!Mask.empty() && m_CurPos > 0 && !CheckCharMask(Mask[m_CurPos]));
 
@@ -1192,7 +1195,7 @@ bool Edit::ProcessKey(const Manager::Key& Key)
 				{
 					const auto MaskLen = Mask.size();
 					size_t j = m_CurPos;
-					for (const auto& i: irange(m_CurPos, MaskLen))
+					for (const auto i: std::views::iota(static_cast<size_t>(m_CurPos), MaskLen))
 					{
 						if (i + 1 < MaskLen && CheckCharMask(Mask[i + 1]))
 						{
@@ -1526,12 +1529,46 @@ void Edit::SetHiString(string_view const Str)
 
 void Edit::SetEOL(eol Eol)
 {
-	m_Eol = Eol;
+	set_eol(Eol.type());
 }
 
 eol Edit::GetEOL() const
 {
-	return m_Eol;
+	return get_eol();
+}
+
+void Edit::ProcessMask(string_view const Str, string_view const Mask, size_t const From)
+{
+	for (size_t i = From, j = 0, MaskLen = Mask.size(); i < MaskLen && j < MaskLen && j < Str.size();)
+	{
+		// After 5050 InsertKey below redraws the dialog.
+		// This might affect m_CurPos in mysterious ways.
+		m_CurPos = static_cast<int>(i);
+
+		if (CheckCharMask(Mask[i]))
+		{
+			bool goLoop = false;
+
+			if (j < Str.size() && CharInMask(Str[j], Mask[i]))
+				InsertKey(Str[j]);
+			else
+				goLoop = true;
+
+			j++;
+
+			if (goLoop)
+				continue;
+		}
+		else
+		{
+			if (Mask[j] == Str[j])
+			{
+				j++;
+			}
+		}
+
+		i++;
+	}
 }
 
 /* $ 25.07.2000 tran
@@ -1544,6 +1581,13 @@ void Edit::SetString(string_view Str, bool const KeepSelection)
 	if (m_Flags.Check(FEDITLINE_READONLY))
 		return;
 
+	string StrCopy;
+	if (within(m_Str, Str))
+	{
+		StrCopy = Str;
+		Str = StrCopy;
+	}
+
 	// коррекция вставляемого размера, если определен GetMaxLength()
 	if (GetMaxLength() != -1 && Str.size() > static_cast<size_t>(GetMaxLength()))
 	{
@@ -1555,66 +1599,43 @@ void Edit::SetString(string_view Str, bool const KeepSelection)
 
 	if (!m_Flags.Check(FEDITLINE_PARENT_SINGLELINE))
 	{
-		if (ends_with(Str, L'\r'))
+		if (Str.ends_with(L'\r'))
 		{
-			m_Eol = eol::mac;
+			set_eol(eol::eol_type::mac);
 			Str.remove_suffix(1);
 		}
 		else
 		{
-			if (ends_with(Str, L'\n'))
+			if (Str.ends_with(L'\n'))
 			{
 				Str.remove_suffix(1);
 
-				if (ends_with(Str, L'\r'))
+				if (Str.ends_with(L'\r'))
 				{
 					Str.remove_suffix(1);
 
-					if (ends_with(Str, L'\r'))
+					if (Str.ends_with(L'\r'))
 					{
 						Str.remove_suffix(1);
-						m_Eol = eol::bad_win;
+						set_eol(eol::eol_type::bad_win);
 					}
 					else
-						m_Eol = eol::win;
+						set_eol(eol::eol_type::win);
 				}
 				else
-					m_Eol = eol::unix;
+					set_eol(eol::eol_type::unix);
 			}
 			else
-				m_Eol = eol::none;
+				set_eol(eol::eol_type::none);
 		}
 	}
 
 	m_CurPos=0;
 
-	const auto Mask = GetInputMask();
-	if (!Mask.empty())
+	if (const auto Mask = GetInputMask(); !Mask.empty())
 	{
 		RefreshStrByMask(TRUE);
-		for (size_t i = 0, j = 0, maskLen = Mask.size(); i < maskLen && j < maskLen && j < Str.size();)
-		{
-			if (CheckCharMask(Mask[i]))
-			{
-				int goLoop=FALSE;
-
-				if (CharInMask(Str[j], Mask[m_CurPos]))
-					InsertKey(Str[j]);
-				else
-					goLoop=TRUE;
-
-				j++;
-
-				if (goLoop) continue;
-			}
-			else
-			{
-				SetPrevCurPos(m_CurPos);
-				m_CurPos++;
-			}
-
-			i++;
-		}
+		ProcessMask(Str, Mask, 0);
 
 		/* Здесь необходимо условие (!*Str), т.к. для очистки строки
 		   обычно вводится нечто вроде SetString("",0)
@@ -1673,47 +1694,9 @@ void Edit::InsertString(string_view Str)
 		return;
 	}
 
-	const auto Mask = GetInputMask();
-	if (!Mask.empty())
+	if (const auto Mask = GetInputMask(); !Mask.empty())
 	{
-		const auto MaskLen = Mask.size();
-
-		if (static_cast<size_t>(m_CurPos) < MaskLen)
-		{
-			const auto StrLen = std::min(MaskLen - m_CurPos, Str.size());
-
-			for (size_t i = m_CurPos, j = 0; i != MaskLen && j != StrLen;)
-			{
-				if (CheckCharMask(Mask[i]))
-				{
-					bool goLoop = false;
-
-					if (j < Str.size() && CharInMask(Str[j], Mask[m_CurPos]))
-					{
-						InsertKey(Str[j]);
-					}
-					else
-						goLoop = true;
-
-					j++;
-
-					if (goLoop)
-						continue;
-				}
-				else
-				{
-					if(Mask[j] == Str[j])
-					{
-						j++;
-					}
-					SetPrevCurPos(m_CurPos);
-					m_CurPos++;
-				}
-
-				i++;
-			}
-		}
-
+		ProcessMask(Str, Mask, m_CurPos);
 		RefreshStrByMask();
 	}
 	else
@@ -1775,7 +1758,7 @@ bool Edit::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 
 		if (
 			CurrentTime - PrevDoubleClick <= std::chrono::milliseconds(GetDoubleClickTime()) &&
-			MouseEvent->dwEventFlags != MOUSE_MOVED &&
+			IsMouseButtonEvent(MouseEvent->dwEventFlags) &&
 			PrevPosition == MouseEvent->dwMousePosition
 		)
 		{
@@ -2004,7 +1987,7 @@ void Edit::DeleteBlock()
 	const auto Mask = GetInputMask();
 	if (!Mask.empty())
 	{
-		for (const auto& i: irange(m_SelStart, m_SelEnd))
+		for (const auto i: std::views::iota(m_SelStart, m_SelEnd))
 		{
 			if (CheckCharMask(Mask[i]))
 			{
@@ -2042,32 +2025,11 @@ void Edit::DeleteBlock()
 	Changed(true);
 }
 
-void Edit::AddColor(const ColorItem& col)
-{
-	ColorList.insert(col);
-}
-
-void Edit::DeleteColor(delete_color_condition const Condition)
-{
-	std::erase_if(ColorList, Condition);
-}
-
-bool Edit::GetColor(ColorItem& col, size_t Item) const
-{
-	if (Item >= ColorList.size())
-		return false;
-
-	auto it = ColorList.begin();
-	std::advance(it, Item);
-	col = *it;
-	return true;
-}
-
-void Edit::ApplyColor(int XPos, int FocusedLeftPos, positions_cache& RealToVisual)
+void Edit::ApplyColor(std::multiset<ColorItem> const& Colors, int XPos, int FocusedLeftPos, positions_cache& RealToVisual)
 {
 	const auto Width = ObjWidth();
 
-	for (const auto& CurItem: ColorList)
+	for (const auto& CurItem: Colors)
 	{
 		// Skip invalid
 		if (CurItem.StartPos > CurItem.EndPos)
@@ -2077,7 +2039,7 @@ void Edit::ApplyColor(int XPos, int FocusedLeftPos, positions_cache& RealToVisua
 		const auto LastFirst = RealToVisual.get(CurItem.EndPos);
 		int LastLast = LastFirst;
 
-		for (const auto& i: irange(2))
+		for (const auto i: std::views::iota(0, 2))
 		{
 			LastLast = RealToVisual.get(CurItem.EndPos + 1 + i);
 			if (LastLast > LastFirst)
@@ -2333,6 +2295,19 @@ bool Edit::is_valid_surrogate_pair_at(size_t const Position) const
 	return Position < Str.size() && is_valid_surrogate_pair(Str.substr(Position));
 }
 
+static constexpr auto eol_shift = std::countr_zero(as_unsigned(std::to_underlying(FEDITLINE_EOL_MASK)));
+
+eol::eol_type Edit::get_eol() const
+{
+	return static_cast<eol::eol_type>((m_Flags.Flags() & FEDITLINE_EOL_MASK) >> eol_shift);
+}
+
+void Edit::set_eol(eol::eol_type const Eol)
+{
+	m_Flags.Clear(FEDITLINE_EOL_MASK);
+	m_Flags.Set(std::to_underlying(Eol) << eol_shift);
+}
+
 bool Edit::is_clear_selection_key(unsigned const Key)
 {
 	static const unsigned int Keys[]
@@ -2344,7 +2319,7 @@ bool Edit::is_clear_selection_key(unsigned const Key)
 		KEY_CTRLHOME,  KEY_RCTRLHOME,  KEY_CTRLNUMPAD7,  KEY_RCTRLNUMPAD7,
 		KEY_CTRLEND,   KEY_RCTRLEND,   KEY_CTRLNUMPAD1,  KEY_RCTRLNUMPAD1,
 		KEY_CTRLLEFT,  KEY_RCTRLLEFT,  KEY_CTRLNUMPAD4,  KEY_RCTRLNUMPAD4,
-		KEY_CTRLRIGHT, KEY_RCTRLRIGHT, KEY_CTRLNUMPAD7,  KEY_RCTRLNUMPAD7,
+		KEY_CTRLRIGHT, KEY_RCTRLRIGHT, KEY_CTRLNUMPAD6,  KEY_RCTRLNUMPAD6,
 		KEY_CTRLS,     KEY_RCTRLS,
 	};
 

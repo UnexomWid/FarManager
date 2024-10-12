@@ -52,13 +52,21 @@ public:
 	explicit map_file(string_view ModuleName);
 	~map_file();
 
-	std::pair<string, string_view> get(uintptr_t Address) const;
+	struct info
+	{
+		string_view File;
+		string_view Symbol;
+		size_t Displacement;
 
-private:
+		bool operator==(const info&) const = default;
+	};
+
+	info get(uintptr_t Address);
+
 	struct line;
 
+private:
 	void read(std::istream& Stream);
-	void read_vc(std::istream& Stream);
 
 	std::map<uintptr_t, line> m_Symbols;
 	unordered_string_set m_Files;

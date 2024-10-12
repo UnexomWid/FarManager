@@ -34,6 +34,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "preprocessor.hpp"
 
+#include <exception>
 #include <stdexcept>
 
 //----------------------------------------------------------------------------
@@ -90,7 +91,7 @@ namespace scope_exit
 	public:
 		template<typename F>
 		[[nodiscard]]
-		auto operator << (F&& f) { return scope_guard<Type, F>(FWD(f)); }
+		auto operator<<(F&& f) { return scope_guard<Type, F>(FWD(f)); }
 	};
 }
 

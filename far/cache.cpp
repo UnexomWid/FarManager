@@ -37,10 +37,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "cache.hpp"
 
 // Internal:
-#include "exception.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -66,7 +66,10 @@ void CachedRead::AdjustAlignment()
 	// 1) for now windows can works only with 512 and 4K BytesPerPhysicalSector
 	// 2) IOCTL_STORAGE_QUERY_PROPERTY (may) doesn't work for dynamic volumes
 	// 3) in most cases even 512 granularity works fine for 4K drives (512e mode)
-	// So just simplify logic, 4K will be more optimal even if 512 works
+	// 4) Note: maybe there is better candidate
+	//    GetFileInformationByHandleEx(FileStorageInfo, &fsi), fsi.PhysicalBytesPerSectorForPerformance
+	//    But that probably works only for OS > Win7...
+	// For a while just simplify logic, 4K will be more optimal even if 512 works
 	size_t BufferSize = 16 * m_Alignment;
 
 #else
@@ -88,12 +91,12 @@ void CachedRead::AdjustAlignment()
 
 		if (!m_File.IoControl(FSCTL_ALLOW_EXTENDED_DASD_IO, nullptr, 0, nullptr, 0))
 		{
-			LOGWARNING(L"IoControl(FSCTL_ALLOW_EXTENDED_DASD_IO, {}): {}"sv, m_File.GetName(), last_error());
+			LOGWARNING(L"IoControl(FSCTL_ALLOW_EXTENDED_DASD_IO, {}): {}"sv, m_File.GetName(), os::last_error());
 		}
 	}
 	else
 	{
-		LOGDEBUG(L"IoControl(IOCTL_STORAGE_QUERY_PROPERTY, {}): {}"sv, m_File.GetName(), last_error());
+		LOGDEBUG(L"IoControl(IOCTL_STORAGE_QUERY_PROPERTY, {}): {}"sv, m_File.GetName(), os::last_error());
 	}
 #endif
 

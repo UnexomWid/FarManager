@@ -46,6 +46,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "common/string_utils.hpp"
 
 // External:
+#include "stack_allocator.hpp"
 
 //----------------------------------------------------------------------------
 
@@ -72,10 +73,10 @@ enum REError
 	errInvalidRange,
 	//! Quantifier applied to invalid object. f.e. lookahead assertion
 	errInvalidQuantifiersCombination,
-	//! Size of match array isn't large enough.
-	errNotEnoughMatches,
-	//! Attempt to match RegExp with Named Brackets, and no storage class provided.
-	errNoStorageForNB,
+	//! Incomplete group structure
+	errIncompleteGroupStructure,
+	//! A subpattern name must be unique
+	errSubpatternGroupNameMustBeUnique,
 	//! Reference to undefined named bracket
 	errReferenceToUndefinedNamedBracket,
 	//! Only fixed length look behind assertions are supported
@@ -101,17 +102,41 @@ enum
 	OP_STRICT       = 0x0040,
 };
 
-struct named_regex_match
+class regex_match
 {
-	unordered_string_map<RegExpMatch> Matches;
+public:
+	using matches = std::vector<RegExpMatch, stack_allocator<RegExpMatch, 4096>>;
+
+private:
+	matches::allocator_type::arena_type m_Arena;
+
+public:
+	matches Matches{ m_Arena };
+};
+
+class named_regex_match
+{
+public:
+	using matches = std::unordered_map<
+		string,
+		size_t,
+		string_comparer,
+		string_comparer,
+		stack_allocator<std::pair<string const, size_t>, 4096>
+	>;
+
+private:
+	matches::allocator_type::arena_type m_Arena;
+
+public:
+	matches Matches{ m_Arena };
 };
 
 class regex_exception: public far_exception
 {
 public:
-	template<typename... args>
-	explicit regex_exception(REError const Code, size_t const Position, args&&... Args):
-		far_exception(false, to_string(Code), FWD(Args)...),
+	explicit regex_exception(REError const Code, size_t const Position, source_location const& Location = source_location::current()):
+		far_exception(to_string(Code), false, Location),
 		m_Code(Code),
 		m_Position(Position)
 	{}
@@ -145,8 +170,11 @@ public:
 	struct REOpCode;
 	struct UniSet;
 	struct StateStackItem;
+	class state_stack;
 
 private:
+
+
 		// code
 		std::vector<REOpCode> code;
 
@@ -163,15 +191,14 @@ private:
 
 		int bracketscount{};
 		int maxbackref{};
-		int havenamedbrackets{};
 #ifdef RE_DEBUG
-		std::wstring resrc;
+		string resrc;
 #endif
 
 		int CalcLength(string_view src);
 		void InnerCompile(const wchar_t* start, const wchar_t* src, int srclength, int options);
 
-		bool InnerMatch(const wchar_t* start, const wchar_t* str, const wchar_t* strend, std::vector<RegExpMatch>& match, named_regex_match* NamedMatch, std::vector<StateStackItem>& stack) const;
+		bool InnerMatch(const wchar_t* start, const wchar_t* str, const wchar_t* strend, regex_match& RegexMatch, named_regex_match& NamedMatch, state_stack& Statetack) const;
 
 		void TrimTail(const wchar_t* start, const wchar_t*& strend) const;
 
@@ -211,24 +238,33 @@ private:
 		    \param NamedMatch - storage of named brackets.
 		    \sa SMatch
 		*/
-		bool Match(string_view text, std::vector<RegExpMatch>& match, named_regex_match* NamedMatch = {}) const;
+		bool Match(string_view text, regex_match& match, named_regex_match* NamedMatch = {}) const;
 		/*! Advanced version of match. Can be used for multiple matches
 		    on one string (to imitate /g modifier of perl regexp
 		*/
-		bool MatchEx(string_view text, size_t From, std::vector<RegExpMatch>& match, named_regex_match* NamedMatch = {}) const;
+		bool MatchEx(string_view text, size_t From, regex_match& match, named_regex_match* NamedMatch = {}) const;
 		/*! Try to find substring that will match regexp.
 		    Parameters and return value are the same as for Match.
 		    It is highly recommended to call Optimize before Search.
 		*/
-		bool Search(string_view text, std::vector<RegExpMatch>& match, named_regex_match* NamedMatch = {}) const;
+		bool Search(string_view text, regex_match& match, named_regex_match* NamedMatch = {}) const;
 		/*! Advanced version of search. Can be used for multiple searches
 		    on one string (to imitate /g modifier of perl regexp
 		*/
-		bool SearchEx(string_view text, size_t From, std::vector<RegExpMatch>& match, named_regex_match* NamedMatch = {}) const;
+		bool SearchEx(string_view text, size_t From, regex_match& match, named_regex_match* NamedMatch = {}) const;
 
 		bool Search(string_view Str) const;
 
 		int GetBracketsCount() const {return bracketscount;}
 };
+
+constexpr string_view get_match(string_view const Str, RegExpMatch const& Match)
+{
+	if (Match.start < 0)
+		return Str.substr(Str.size());
+
+	assert(Match.end >= Match.start);
+	return Str.substr(Match.start, Match.end - Match.start);
+}
 
 #endif // REGEXP_HPP_18B41BD7_69F8_461A_8A81_069B447D5554

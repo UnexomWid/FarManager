@@ -11,6 +11,10 @@
       <ComponentRef Id="File_id.diz" />
       <ComponentRef Id="RestoreOldPluginSettings.cmd" />
       <ComponentRef Id="SaveOldPluginSettings.cmd" />
+      <ComponentRef Id="Far.VisualElementsManifest.xml" />
+      <ComponentRef Id="VisualElements.large.png" />
+      <ComponentRef Id="VisualElements.small.png" />
+      <ComponentRef Id="sqlite3.dll" />
       <Feature Id="Addons" Level="1" Title="!(loc.Feature.Title.Addons)" AllowAdvertise="no" Description="!(loc.Feature.Description.Addons)">
         <ComponentRef Id="Descript.ion_1" />
         <ComponentRef Id="README.TXT_1" />
@@ -44,6 +48,7 @@
           <ComponentRef Id="nc5pal2.farconfig_1" />
           <ComponentRef Id="Rodion_Doroshkevich.farconfig_1" />
           <ComponentRef Id="VaxColors.farconfig_1" />
+          <ComponentRef Id="black_and_white.farconfig_2" />
           <ComponentRef Id="black_from_Fonarev.farconfig_2" />
           <ComponentRef Id="black_from_july.farconfig_2" />
           <ComponentRef Id="black_from_Myodov.farconfig_2" />
@@ -72,6 +77,7 @@
           <ComponentRef Id="Edit.OpenURL.lua" />
           <ComponentRef Id="Edit.SaveAndExit.lua" />
           <ComponentRef Id="Edit.SaveFile.lua" />
+          <ComponentRef Id="Edit.SelectionStartEnd.lua" />
           <ComponentRef Id="F3.lua" />
           <ComponentRef Id="F9DeactivateMenu.lua" />
           <ComponentRef Id="F9Table.lua" />
@@ -97,6 +103,7 @@
           <ComponentRef Id="Search.CtrlIns.lua" />
           <ComponentRef Id="ShiftBS.lua" />
           <ComponentRef Id="ShiftTab.lua" />
+          <ComponentRef Id="SwapHorizontalScrollDirection.lua" />
           <ComponentRef Id="Symlink.lua" />
           <ComponentRef Id="UppercaseFolders.lua" />
           <ComponentRef Id="View.CtrlUpDown.lua" />
@@ -104,6 +111,7 @@
           <ComponentRef Id="View.PgDn.lua" />
           <ComponentRef Id="View.ShiftInsSearch.lua" />
           <ComponentRef Id="View.Space.lua" />
+          <ComponentRef Id="View.TypeToSearch.lua" />
           <ComponentRef Id="WheelScreenSwitch.lua" />
           <ComponentRef Id="Editor.ColorWord.moon" />
         </Feature>
@@ -112,7 +120,6 @@
           <ComponentRef Id="Descript.ion_7" />
           <ComponentRef Id="Executor.4NT.farconfig" />
           <ComponentRef Id="Executor.CMD.farconfig" />
-          <ComponentRef Id="Executor.COMMAND.farconfig" />
           <ComponentRef Id="WindowsGUI.farconfig" />
           <ComponentRef Id="WindowsGUI.lua" />
         </Feature>
@@ -151,8 +158,17 @@
         <ComponentRef Id="FarEncyclopedia.ru.chm" />
         <ComponentRef Id="macroapi_manual.ru.chm" />
       </Feature>
+      <Feature Id="Docs.Polish" Level="1" Display="hidden" AllowAdvertise="no">
+        <ComponentRef Id="Bug.Report.txt_2" />
+        <ComponentRef Id="Far.FAQ.txt_2" />
+        <ComponentRef Id="Plugins.Install.txt_2" />
+        <ComponentRef Id="Plugins.Review.txt_2" />
+        <ComponentRef Id="TechInfo.txt_2" />
+        <ComponentRef Id="macroapi_manual.pl.chm" />
+      </Feature>
       <Feature Id="MapFiles" Level="1" Title="!(loc.Feature.Title.MapFiles)" AllowAdvertise="no" Description="!(loc.Feature.Description.MapFiles)">
         <ComponentRef Id="Far.map" />
+        <ComponentRef Id="sqlite3.map" />
       </Feature>
       <Feature Id="Languages" Level="1" Title="!(loc.Feature.Title.Languages)" AllowAdvertise="no" Description="!(loc.Feature.Description.Languages)">
         <Feature Id="Belarusian" Level="1" Title="!(loc.Feature.Title.Belarusian)" AllowAdvertise="no">
@@ -630,6 +646,10 @@
             <ComponentRef Id="colorerr.hlf" />
             <ComponentRef Id="colorerr.lng" />
           </Feature>
+		  <Feature Id="FarColorer.Polish" Level="1" Display="hidden" AllowAdvertise="no">
+            <ComponentRef Id="colorerpol.hlf" />
+            <ComponentRef Id="colorerpol.lng" />
+          </Feature>
           <Feature Id="FarColorer.MapFiles" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="colorer.map" />
           </Feature>
@@ -782,9 +802,20 @@
           <ComponentRef Id="NetBoxEng.lng" />
           <ComponentRef Id="README.md" />
           <ComponentRef Id="LICENSE.txt" />
+          <ComponentRef Id="cacert.pem" />
           <Feature Id="NetBox.Russian" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="README.RU.md" />
             <ComponentRef Id="NetBoxRus.lng" />
+          </Feature>
+          <Feature Id="NetBox.Polish" Level="1" Display="hidden" AllowAdvertise="no">
+            <ComponentRef Id="README.PL.md" />
+            <ComponentRef Id="NetBoxPol.lng" />
+          </Feature>
+          <Feature Id="NetBox.Spanish" Level="1" Display="hidden" AllowAdvertise="no">
+            <ComponentRef Id="NetBoxSpa.lng" />
+          </Feature>
+          <Feature Id="NetBox.MapFiles" Level="1" Display="hidden" AllowAdvertise="no">
+            <ComponentRef Id="NetBox.map" />
           </Feature>
           <Feature Id="NetBox.Changelogs" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="ChangeLog_11" />
@@ -840,7 +871,6 @@
 <?if $(var.Platform) = x86 ?>
           <ComponentRef Id="lua51.dll_1" />
 <?endif?>
-          <ComponentRef Id="lpeg.dll" />
           <ComponentRef Id="_globalinfo.lua" />
           <ComponentRef Id="api.lua" />
           <ComponentRef Id="utils.lua" />
@@ -975,6 +1005,9 @@
           <Feature Id="Proclist.Lithuanian" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="ProcLit.lng" />
           </Feature>
+          <Feature Id="Proclist.Spanish" Level="1" Display="hidden" AllowAdvertise="no">
+            <ComponentRef Id="ProcSpa.lng" />
+          </Feature>
           <Feature Id="Proclist.MapFiles" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="ProcList.map" />
           </Feature>
@@ -1003,6 +1036,7 @@
           <Feature Id="TmpPanel.Polish" Level="1" Display="hidden" AllowAdvertise="no">
             <ComponentRef Id="disks.pol.temp" />
             <ComponentRef Id="shortcuts.pol.lua" />
+            <ComponentRef Id="shortcuts.pol.temp" />
             <ComponentRef Id="TmpPol.hlf" />
             <ComponentRef Id="TmpPol.lng" />
           </Feature>

@@ -22,7 +22,7 @@ const wchar_t* GetMsg(int MsgId)
 
 std::pair<string_view, string_view> ParseParam(string_view Str)
 {
-	if (!starts_with(Str, L'|'))
+	if (!Str.starts_with(L'|'))
 		return {};
 
 	auto Param = Str.substr(1);
@@ -83,6 +83,8 @@ void WFD2FFD(const WIN32_FIND_DATA& wfd, PluginPanelItem& ffd, string* NameData)
 	ffd.LastWriteTime = wfd.ftLastWriteTime;
 	ffd.FileSize = make_integer<unsigned long long>(wfd.nFileSizeLow, wfd.nFileSizeHigh);
 	ffd.AllocationSize = 0;
+	ffd.Reserved[0] = wfd.dwReserved0;
+	ffd.Reserved[1] = wfd.dwReserved1;
 	ffd.AlternateFileName = {};
 
 	if (NameData)
@@ -182,6 +184,9 @@ string GetFullPath(string_view Input)
 	for (const null_terminated_t C_Input(Input);;)
 	{
 		const size_t Size = FSF.ConvertPath(CPM_FULL, C_Input.c_str(), Result.data(), Result.size());
+		if (!Size)
+			return {};
+
 		const auto CurrentSize = Result.size();
 		Result.resize(Size);
 		if (Size <= CurrentSize)
@@ -242,7 +247,7 @@ static bool isDevice(const string_view Filename, const string_view DevicePrefix)
 		return false;
 
 	const auto Tail = Filename.substr(DevicePrefix.size());
-	return std::all_of(ALL_CONST_RANGE(Tail), std::iswdigit);
+	return std::ranges::all_of(Tail, std::iswdigit);
 }
 
 bool GetFileInfoAndValidate(const string_view FilePath, PluginPanelItem& FindData, string& NameData, const bool Any)
@@ -257,7 +262,7 @@ bool GetFileInfoAndValidate(const string_view FilePath, PluginPanelItem& FindDat
 	const auto FullPath = GetFullPath(FileName);
 	const auto NtPath = FormNtPath(FullPath);
 
-	if (starts_with(FileName, L"\\\\.\\") && FSF.LIsAlpha(FileName[4]) && FileName[5] == L':' && FileName[6] == 0)
+	if (FileName.starts_with(L"\\\\.\\") && FSF.LIsAlpha(FileName[4]) && FileName[5] == L':' && FileName[6] == 0)
 	{
 		FindData.FileAttributes = FILE_ATTRIBUTE_ARCHIVE;
 		NameData = FileName;

@@ -40,6 +40,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Common:
 #include "common/preprocessor.hpp"
+#include "common/type_traits.hpp"
 
 // External:
 
@@ -47,64 +48,75 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 WARNING_PUSH(3)
 
+WARNING_DISABLE_MSC(4267) // 'var' : conversion from 'size_t' to 'type', possible loss of data
+
+WARNING_DISABLE_GCC("-Warray-bounds")
 WARNING_DISABLE_GCC("-Wctor-dtor-privacy")
+WARNING_DISABLE_GCC("-Wdangling-reference")
+WARNING_DISABLE_GCC("-Wstringop-overflow")
 
 WARNING_DISABLE_CLANG("-Weverything")
 
-#define FMT_CONSTEVAL // Not yet
+#define FMT_CONSTEVAL consteval
+#define FMT_HAS_CONSTEVAL
 
 #define FMT_STATIC_THOUSANDS_SEPARATOR
 #include "thirdparty/fmt/fmt/format.h"
 #include "thirdparty/fmt/fmt/xchar.h"
-#include "thirdparty/fmt/fmt/ostream.h"
 #undef FMT_STATIC_THOUSANDS_SEPARATOR
 
 WARNING_POP()
 
-namespace detail
+namespace far
 {
-	template<typename F>
-	void validate_format()
+	template<typename... args>
+	using format_string = fmt::wformat_string<args...>;
+
+	template<typename... args>
+	using char_format_string = fmt::format_string<args...>;
+
+	template <typename... args>
+	auto format(format_string<args...> const Format, args const&... Args)
 	{
-		static_assert(!std::is_array_v<F>, "Use FSTR or string_view instead of string literals");
+		return fmt::vformat(fmt::wstring_view(Format), fmt::make_wformat_args(Args...));
 	}
-}
 
-template<typename F, typename... args>
-auto format(F&& Format, args&&... Args)
-{
-	detail::validate_format<F>();
+	template <typename... args>
+	auto format(char_format_string<args...> const Format, args const&... Args)
+	{
+		return fmt::vformat(fmt::string_view(Format), fmt::make_format_args(Args...));
+	}
 
-	return fmt::format(FWD(Format), FWD(Args)...);
-}
+	// Don't "auto" it yet, ICE in VS2019
+	template <typename... args>
+	auto vformat(string_view const Format, args const&... Args)
+	{
+		return fmt::vformat(fmt::wstring_view(Format), fmt::make_wformat_args(Args...));
+	}
 
-template<typename I, typename F, typename... args>
-auto format_to(I&& Iterator, F&& Format, args&&... Args)
-{
-	detail::validate_format<F>();
+	template<typename I, typename... args> requires std::output_iterator<I, wchar_t>
+	auto format_to(I const Iterator, format_string<args...> const Format, args const&... Args)
+	{
+		return fmt::vformat_to(Iterator, fmt::wstring_view(Format), fmt::make_wformat_args(Args...));
+	}
 
-	return fmt::format_to(FWD(Iterator), FWD(Format), FWD(Args)...);
-}
-
-template<typename F, typename... args>
-auto format_to(string& Str, F&& Format, args&&... Args)
-{
-	detail::validate_format<F>();
-
-	return fmt::format_to(std::back_inserter(Str), FWD(Format), FWD(Args)...);
+	template<typename... args>
+	auto format_to(string& Str, format_string<args...> const Format, args const&... Args)
+	{
+		return fmt::vformat_to(std::back_inserter(Str), fmt::wstring_view(Format), fmt::make_wformat_args(Args...));
+	}
 }
 
 #define FSTR(str) FMT_STRING(str)
 
-template<typename T>
-auto str(const T& Value)
+auto str(const auto& Value)
 {
 	return fmt::to_wstring(Value);
 }
 
 inline auto str(const void* Value)
 {
-	return format(FSTR(L"0x{:0{}X}"sv), reinterpret_cast<uintptr_t>(Value), sizeof(Value) * 2);
+	return far::format(L"0x{:0{}X}"sv, std::bit_cast<uintptr_t>(Value), sizeof(Value) * 2);
 }
 
 inline auto str(void* Value)
@@ -123,8 +135,7 @@ namespace format_helpers
 {
 	struct parse_no_spec
 	{
-		template<typename ParseContext>
-		constexpr auto parse(ParseContext& ctx)
+		constexpr auto parse(auto& ctx) const
 		{
 			return ctx.begin();
 		}
@@ -133,10 +144,11 @@ namespace format_helpers
 	template<typename object_type>
 	struct format_no_spec
 	{
-		template <typename FormatContext>
-		auto format(object_type const& Value, FormatContext& ctx)
+		// Don't "auto" it yet, ICE in VS2019
+		template<typename FormatContext>
+		auto format(object_type const& Value, FormatContext& ctx) const
 		{
-			return fmt::format_to(ctx.out(), FSTR(L"{}"sv), fmt::formatter<object_type, wchar_t>::to_string(Value));
+			return fmt::format_to(ctx.out(), L"{}"sv, fmt::formatter<object_type, wchar_t>::to_string(Value));
 		}
 	};
 
@@ -146,10 +158,41 @@ namespace format_helpers
 	};
 }
 
-template<>
-struct fmt::formatter<std::exception, wchar_t>: format_helpers::no_spec<std::exception>
+template<typename object_type>
+struct formattable;
+
+namespace detail
 {
-	static string to_string(std::exception const& Value);
+	template<typename type>
+	constexpr inline auto is_formattable = requires
+	{
+		formattable<type>{};
+	};
+
+	template<typename type>
+	constexpr inline auto has_to_string = requires(type t)
+	{
+		t.to_string();
+	};
+}
+
+template<typename object_type> requires detail::is_formattable<object_type> || detail::has_to_string<object_type>
+struct fmt::formatter<object_type, wchar_t>: format_helpers::no_spec<object_type>
+{
+	static string to_string(object_type const& Value)
+	{
+		if constexpr(::detail::is_formattable<object_type>)
+			return ::formattable<object_type>::to_string(Value);
+		else
+			return Value.to_string();
+	}
 };
+
+// fmt 9 deprecated implicit enums formatting :(
+template<typename enum_type> requires std::is_enum_v<enum_type>
+auto format_as(enum_type const Value)
+{
+	return std::to_underlying(Value);
+}
 
 #endif // FORMAT_HPP_27C3F464_170B_432E_9D44_3884DDBB95AC

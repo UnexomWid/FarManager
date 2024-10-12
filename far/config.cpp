@@ -89,6 +89,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "char_width.hpp"
 
 // Platform:
+#include "platform.clipboard.hpp"
 #include "platform.env.hpp"
 
 // Common:
@@ -235,9 +236,9 @@ void Options::PanelSettings()
 
 	auto& AutoUpdateEnabled = Builder.AddCheckbox(lng::MConfigAutoUpdateLimit, AutoUpdate);
 	auto& AutoUpdateLimitItem = Builder.AddIntEditField(AutoUpdateLimit, 6);
-	AutoUpdateLimitItem.Indent(4);
 	Builder.LinkFlags(AutoUpdateEnabled, AutoUpdateLimitItem, DIF_DISABLE, false);
 	Builder.AddTextBefore(AutoUpdateLimitItem, lng::MConfigAutoUpdateLimit2).Indent(4);
+	AutoUpdateLimitItem.Indent(4);
 	Builder.AddCheckbox(lng::MConfigAutoUpdateRemoteDrive, AutoUpdateRemoteDrive);
 
 	Builder.AddSeparator();
@@ -349,7 +350,7 @@ void Options::InterfaceSettings()
 	std::vector<DialogBuilderListItem> IconIndices;
 	IconIndices.reserve(consoleicons::instance().size());
 
-	for (const auto& i: irange(consoleicons::instance().size()))
+	for (const auto i: std::views::iota(0uz, consoleicons::instance().size()))
 	{
 		IconIndices.emplace_back(str(i), static_cast<int>(i));
 	}
@@ -372,7 +373,7 @@ void Options::InterfaceSettings()
 			CMOpt.CopyTimeRule = 3;
 
 		SetFarConsoleMode();
-		consoleicons::instance().set_icon();
+		consoleicons::instance().update_icon();
 
 		const auto& Panels = Global->CtrlObject->Cp();
 		Panels->LeftPanel()->Update(UPDATE_KEEP_SELECTION);
@@ -456,7 +457,7 @@ void Options::InfoPanelSettings()
 
 static void ApplyDefaultMaskGroups()
 {
-	static const std::pair<string_view, string_view> Sets[] =
+	static const std::pair<string_view, string_view> Sets[]
 	{
 		{ L"arc"sv,  L"*.zip,*.rar,*.[7bgxl]z,*.[bg]zip,*.tar,*.t[agbxl]z,*.z,*.ar[cj],*.r[0-9][0-9],*.a[0-9][0-9],*.bz2,*.cab,*.jar,*.lha,*.lzh,*.ha,*.ac[bei],*.pa[ck],*.rk,*.cpio,*.rpm,*.zoo,*.hqx,*.sit,*.ice,*.uc2,*.ain,*.imp,*.777,*.ufa,*.boa,*.bs[2a],*.sea,*.[ah]pk,*.ddi,*.x2,*.rkv,*.[lw]sz,*.h[ay]p,*.lim,*.sqz,*.chz,*.aa[br],*.msi"sv },
 		{ L"temp"sv, L"*.bak,*.tmp"sv },
@@ -491,6 +492,7 @@ void Options::MaskGroupsSettings()
 	const auto BottomTitle = KeysToLocalizedText(KEY_INS, KEY_DEL, KEY_F4, KEY_F7, KEY_CTRLR);
 	MasksMenu->SetBottomTitle(BottomTitle);
 	MasksMenu->SetHelp(L"MaskGroupsSettings"sv);
+	MasksMenu->SetId(MaskGroupsMenuId);
 	FillMasksMenu(*MasksMenu);
 	MasksMenu->SetPosition({ -1, -1, -1, -1 });
 
@@ -504,7 +506,7 @@ void Options::MaskGroupsSettings()
 			if(Filter && any_of(Key, KEY_ESC, KEY_F10, KEY_ENTER, KEY_NUMENTER))
 			{
 				Filter = false;
-				for (const auto& i: irange(MasksMenu->size()))
+				for (const auto i: std::views::iota(0uz, MasksMenu->size()))
 				{
 					MasksMenu->UpdateItemFlags(static_cast<int>(i), MasksMenu->at(i).Flags & ~MIF_HIDDEN);
 				}
@@ -595,7 +597,7 @@ void Options::MaskGroupsSettings()
 					Builder.AddOKCancel();
 					if(Builder.ShowDialog())
 					{
-						for (const auto& i: irange(MasksMenu->size()))
+						for (const auto i: std::views::iota(0uz, MasksMenu->size()))
 						{
 							filemasks Masks;
 							Masks.assign(ConfigProvider().GeneralCfg()->GetValue<string>(L"Masks"sv, *MasksMenu->GetComplexUserDataPtr<string>(i)));
@@ -606,7 +608,7 @@ void Options::MaskGroupsSettings()
 						}
 						MasksMenu->SetPosition({ -1, -1, -1, -1 });
 						MasksMenu->SetTitle(Value);
-						MasksMenu->SetBottomTitle(format(msg(lng::MMaskGroupTotal), MasksMenu->GetShowItemCount()));
+						MasksMenu->SetBottomTitle(far::vformat(msg(lng::MMaskGroupTotal), MasksMenu->GetShowItemCount()));
 						Filter = true;
 					}
 				}
@@ -663,7 +665,7 @@ void Options::VMenuSettings()
 		{ lng::MConfigVMenuClickIgnore, VMENUCLICK_IGNORE },  // Do nothing
 	};
 
-	static const std::pair<lng, IntOption VMenuOptions::*> DialogItems[] =
+	static const std::pair<lng, IntOption VMenuOptions::*> DialogItems[]
 	{
 		{ lng::MConfigVMenuLBtnClick, &VMenuOptions::LBtnClick },
 		{ lng::MConfigVMenuRBtnClick, &VMenuOptions::RBtnClick },
@@ -819,7 +821,6 @@ void Options::ViewerConfig(ViewerOptions &ViOptRef, bool Local)
 
 	Builder.StartColumns();
 	Builder.AddCheckbox(lng::MViewConfigPersistentSelection, ViOptRef.PersistentBlocks);
-	Builder.AddCheckbox(lng::MViewConfigEditAutofocus, ViOptRef.SearchEditFocus);
 	const auto& TabSize = Builder.AddIntEditField(ViOptRef.TabSize, 3);
 	Builder.AddTextAfter(TabSize, lng::MViewConfigTabSize);
 	Builder.ColumnBreak();
@@ -934,7 +935,7 @@ void Options::SetFolderInfoFiles()
 	}
 }
 
-static void ResetViewModes(span<PanelViewSettings> const Modes, int const Index = -1)
+static void ResetViewModes(std::span<PanelViewSettings> const Modes, int const Index = -1)
 {
 	static const struct
 	{
@@ -1105,8 +1106,8 @@ static void ResetViewModes(span<PanelViewSettings> const Modes, int const Index 
 
 	if (Index < 0)
 	{
-		for (const auto& i: zip(InitialModes, Modes))
-			std::apply(InitMode, i);
+		for (const auto& [Src, Dst]: zip(InitialModes, Modes))
+			InitMode(Src, Dst);
 	}
 	else
 	{
@@ -1145,12 +1146,12 @@ void Options::SetFilePanelModes()
 		// +1 for separator
 		std::vector<menu_item> ModeListMenu(MenuCount > predefined_panel_modes_count? MenuCount + 1: MenuCount);
 
-		for (const auto& i: irange(ViewSettings.size()))
+		for (const auto i: std::views::iota(0uz, ViewSettings.size()))
 		{
 			ModeListMenu[RealModeToDisplay(i)].Name = ViewSettings[i].Name;
 		}
 
-		for (const auto& i: irange(predefined_panel_modes_count))
+		for (const auto i: std::views::iota(0uz, predefined_panel_modes_count))
 		{
 			if (ModeListMenu[i].Name.empty())
 				ModeListMenu[i].Name = msg(PredefinedNames[i]);
@@ -1312,14 +1313,14 @@ void Options::SetFilePanelModes()
 
 		inplace::remove_highlight(ModeDlg[MD_DOUBLEBOX].strData);
 
-		static const std::pair<ModeItems, panel_view_settings_flags> ModesFlagsMapping[] =
+		static const std::pair<ModeItems, panel_view_settings_flags> ModesFlagsMapping[]
 		{
-			{ MD_CHECKBOX_FULLSCREEN, PVS_FULLSCREEN },
-			{ MD_CHECKBOX_ALIGNFILEEXT, PVS_ALIGNEXTENSIONS },
-			{ MD_CHECKBOX_ALIGNFOLDEREXT, PVS_FOLDERALIGNEXTENSIONS },
-			{ MD_CHECKBOX_FOLDERUPPERCASE, PVS_FOLDERUPPERCASE },
-			{ MD_CHECKBOX_FILESLOWERCASE, PVS_FILELOWERCASE },
-			{ MD_CHECKBOX_UPPERTOLOWERCASE, PVS_FILEUPPERTOLOWERCASE },
+			{ MD_CHECKBOX_FULLSCREEN,          PVS_FULLSCREEN },
+			{ MD_CHECKBOX_ALIGNFILEEXT,        PVS_ALIGNEXTENSIONS },
+			{ MD_CHECKBOX_ALIGNFOLDEREXT,      PVS_FOLDERALIGNEXTENSIONS },
+			{ MD_CHECKBOX_FOLDERUPPERCASE,     PVS_FOLDERUPPERCASE },
+			{ MD_CHECKBOX_FILESLOWERCASE,      PVS_FILELOWERCASE },
+			{ MD_CHECKBOX_UPPERTOLOWERCASE,    PVS_FILEUPPERTOLOWERCASE },
 		};
 
 		if (!AddNewMode)
@@ -1395,8 +1396,8 @@ void Options::SetFilePanelModes()
 
 struct FARConfigItem
 {
-	template<typename option_type, typename default_type>
-	FARConfigItem(size_t Root, string_view KeyName, string_view ValueName, option_type& Value, const default_type& Default):
+	template<typename option_type>
+	FARConfigItem(size_t Root, string_view KeyName, string_view ValueName, option_type& Value, const auto& Default):
 		ApiRoot(Root),
 		KeyName(KeyName),
 		ValName(ValueName),
@@ -1424,7 +1425,7 @@ struct FARConfigItem
 			Item.Flags = LIF_CHECKED|L'*';
 		}
 		Item.Text = ListItemString.c_str();
-		Item.UserData = reinterpret_cast<intptr_t>(this);
+		Item.UserData = std::bit_cast<intptr_t>(this);
 		return Item;
 	}
 
@@ -1436,7 +1437,7 @@ struct FARConfigItem
 		if (!Value->Edit(Builder, Mode))
 		{
 			Builder.AddSeparator();
-			Builder.AddButtons({ lng::MOk, lng::MReset, lng::MCancel });
+			Builder.AddButtons({{ lng::MOk, lng::MReset, lng::MCancel }});
 			Result = Builder.ShowDialogEx();
 		}
 		if(Result == 0 || Result == 1)
@@ -1598,7 +1599,7 @@ bool IntOption::Edit(DialogBuilder& Builder, int const Param)
 			High.reserve(BitCount);
 			Low.reserve(BitCount);
 
-			for (const auto& i: irange(BitCount))
+			for (const auto i: std::views::iota(0, BitCount))
 			{
 				const auto Num = BitCount - 1 - i;
 				High.push_back(static_cast<wchar_t>(L'0' + Num / 10));
@@ -1611,7 +1612,7 @@ bool IntOption::Edit(DialogBuilder& Builder, int const Param)
 		break;
 
 	default:
-		UNREACHABLE;
+		std::unreachable();
 	}
 
 	return false;
@@ -1626,7 +1627,7 @@ void IntOption::Export(FarSettingsItem& To) const
 
 string IntOption::ExInfo() const
 {
-	return format(FSTR(L" = 0x{:X}"sv), as_unsigned(Get()));
+	return far::format(L" = 0x{:X}"sv, as_unsigned(Get()));
 }
 
 
@@ -1653,7 +1654,7 @@ public:
 	using const_iterator = iterator;
 	using value_type = FARConfigItem;
 
-	farconfig(span<const FARConfigItem> Items, GeneralConfig* cfg):
+	farconfig(std::span<const FARConfigItem> Items, GeneralConfig* cfg):
 		m_items(Items),
 		m_cfg(cfg)
 	{
@@ -1676,7 +1677,7 @@ public:
 	GeneralConfig* GetConfig() const { return m_cfg; }
 
 private:
-	span<const FARConfigItem> m_items;
+	std::span<const FARConfigItem> m_items;
 	GeneralConfig* m_cfg;
 };
 
@@ -1708,8 +1709,6 @@ Options::Options():
 
 	PanelRightClickRule.SetCallback(option::validator([](long long Value) { return Value %= 3; }));
 	PanelCtrlAltShiftRule.SetCallback(option::validator([](long long Value) { return Value %= 3; }));
-
-	HelpTabSize.SetCallback(option::validator([](long long Value) { return DefaultTabSize; })); // пока жестко пропишем...
 
 	const auto MacroKeyValidator = [](const string& Value, unsigned& Key, string_view const DefaultValue, unsigned DefaultKey)
 	{
@@ -1776,6 +1775,24 @@ Options::Options():
 	ScreenSaver.SetCallback(option::notifier([](bool const Value)
 	{
 		wakeup_for_screensaver(Value);
+	}));
+
+	ClipboardUnicodeWorkaround.SetCallback(option::notifier([](bool const Value)
+	{
+		os::clipboard::enable_ansi_to_unicode_conversion_workaround(Value);
+	}));
+
+	SetPalette.SetCallback(option::notifier([](bool const Value)
+	{
+		::SetPalette();
+	}));
+
+	Exec.strExcludeCmds.SetCallback(option::notifier([&](string_view const Value)
+	{
+		const auto Enum = enum_tokens(Value, L";"sv);
+		// TODO: assign_range
+		Exec.ExcludeCmds.assign(ALL_RANGE(Enum));
+		std::ranges::sort(Exec.ExcludeCmds, string_sort::less_icase);
 	}));
 
 	// По умолчанию - брать плагины из основного каталога
@@ -1859,7 +1876,6 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyEditor,                 L"ReadOnlyLock"sv,                  EdOpt.ReadOnlyLock, 0},
 		{FSSF_PRIVATE,           NKeyEditor,                 L"SaveEditorPos"sv,                 EdOpt.SavePos, true},
 		{FSSF_PRIVATE,           NKeyEditor,                 L"SaveEditorShortPos"sv,            EdOpt.SaveShortPos, true},
-		{FSSF_PRIVATE,           NKeyEditor,                 L"SearchRegexp"sv,                  EdOpt.SearchRegexp, false},
 		{FSSF_PRIVATE,           NKeyEditor,                 L"SearchSelFound"sv,                EdOpt.SearchSelFound, false},
 		{FSSF_PRIVATE,           NKeyEditor,                 L"SearchCursorAtEnd"sv,             EdOpt.SearchCursorAtEnd, false},
 		{FSSF_PRIVATE,           NKeyEditor,                 L"ShowKeyBar"sv,                    EdOpt.ShowKeyBar, true},
@@ -1871,7 +1887,6 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyEditor,                 L"UseExternalEditor"sv,             EdOpt.UseExternalEditor, false},
 		{FSSF_EDITOR,            NKeyEditor,                 L"WordDiv"sv,                       EdOpt.strWordDiv, WordDiv0},
 		{FSSF_PRIVATE,           NKeyHelp,                   L"ActivateURL"sv,                   HelpURLRules, 1},
-		{FSSF_PRIVATE,           NKeyHelp,                   L"HelpSearchRegexp"sv,              HelpSearchRegexp, false},
 		{FSSF_PRIVATE,           NKeyCommandHistory,         L"Count"sv,                         HistoryCount, 1000},
 		{FSSF_PRIVATE,           NKeyCommandHistory,         L"Lifetime"sv,                      HistoryLifetime, 90},
 		{FSSF_PRIVATE,           NKeyDialogHistory,          L"Count"sv,                         DialogsHistoryCount, 1000},
@@ -1892,6 +1907,7 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyInterface,              L"CursorSize2"sv,                   CursorSize[1], 10},
 		{FSSF_PRIVATE,           NKeyInterface,              L"CursorSize3"sv,                   CursorSize[2], 99},
 		{FSSF_PRIVATE,           NKeyInterface,              L"CursorSize4"sv,                   CursorSize[3], 99},
+		{FSSF_PRIVATE,           NKeyInterface,              L"GrabberCursorSize"sv,             GrabberCursorSize, 50},
 		{FSSF_PRIVATE,           NKeyInterface,              L"EditorTitleFormat"sv,             strEditorTitleFormat, L"%Lng %File"sv},
 		{FSSF_PRIVATE,           NKeyInterface,              L"FormatNumberSeparators"sv,        FormatNumberSeparators, L""sv},
 		{FSSF_PRIVATE,           NKeyInterface,              L"FullWidthAwareRendering"sv,       FullWidthAwareRendering, 0},
@@ -1905,6 +1921,7 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyInterface,              L"TitleAddons"sv,                   strTitleAddons, L"%Ver %Platform %Admin"sv},
 		{FSSF_PRIVATE,           NKeyInterface,              L"GreetingName"sv,                  strGreetingName, L""sv },
 		{FSSF_PRIVATE,           NKeyInterface,              L"ViewerTitleFormat"sv,             strViewerTitleFormat, L"%Lng %File"sv},
+		{FSSF_PRIVATE,           NKeyInterface,              L"SetPalette"sv,                    SetPalette, true},
 		{FSSF_PRIVATE,           NKeyInterfaceCompletion,    L"Append"sv,                        AutoComplete.AppendCompletion, false},
 		{FSSF_PRIVATE,           NKeyInterfaceCompletion,    L"ModalList"sv,                     AutoComplete.ModalList, false},
 		{FSSF_PRIVATE,           NKeyInterfaceCompletion,    L"ShowList"sv,                      AutoComplete.ShowList, true},
@@ -2008,6 +2025,7 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeySystem,                 L"AutoUpdateRemoteDrive"sv,         AutoUpdateRemoteDrive, true},
 		{FSSF_PRIVATE,           NKeySystem,                 L"BoxSymbols"sv,                    strBoxSymbols, DefaultBoxSymbols},
 		{FSSF_PRIVATE,           NKeySystem,                 L"CASRule"sv,                       CASRule, -1},
+		{FSSF_PRIVATE,           NKeySystem,                 L"ClipboardUnicodeWorkaround"sv,    ClipboardUnicodeWorkaround, false},
 		{FSSF_PRIVATE,           NKeySystem,                 L"CmdHistoryRule"sv,                CmdHistoryRule, false},
 		{FSSF_PRIVATE,           NKeySystem,                 L"ConsoleDetachKey"sv,              ConsoleDetachKey, L"CtrlShiftTab"sv},
 		{FSSF_PRIVATE,           NKeySystem,                 L"CopyBufferSize"sv,                CMOpt.BufferSize, 0},
@@ -2026,13 +2044,14 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeySystem,                 L"FindFolders"sv,                   FindOpt.FindFolders, true},
 		{FSSF_PRIVATE,           NKeySystem,                 L"FindSymLinks"sv,                  FindOpt.FindSymLinks, true},
 		{FSSF_PRIVATE,           NKeySystem,                 L"FolderInfo"sv,                    InfoPanel.strFolderInfoFiles, L"DirInfo,File_Id.diz,Descript.ion,ReadMe.*,Read.Me"sv},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDelta"sv,                  MsWheelDelta, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaEdit"sv,              MsWheelDeltaEdit, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaHelp"sv,              MsWheelDeltaHelp, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaView"sv,              MsWheelDeltaView, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDelta"sv,                 MsHWheelDelta, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDeltaEdit"sv,             MsHWheelDeltaEdit, 1},
-		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDeltaView"sv,             MsHWheelDeltaView, 1},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDelta"sv,                  MsWheelDelta, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaEdit"sv,              MsWheelDeltaEdit, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaHelp"sv,              MsWheelDeltaHelp, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelDeltaView"sv,              MsWheelDeltaView, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDelta"sv,                 MsHWheelDelta, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDeltaEdit"sv,             MsHWheelDeltaEdit, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsHWheelDeltaView"sv,             MsHWheelDeltaView, 0},
+		{FSSF_PRIVATE,           NKeySystem,                 L"MsWheelThreshold"sv,              MsWheelThreshold, 0},
 		{FSSF_PRIVATE,           NKeySystem,                 L"MultiCopy"sv,                     CMOpt.MultiCopy, false},
 		{FSSF_PRIVATE,           NKeySystem,                 L"MultiMakeDir"sv,                  MultiMakeDir, false},
 #ifndef NO_WRAPPER
@@ -2093,8 +2112,6 @@ void Options::InitConfigsData()
 		{FSSF_PRIVATE,           NKeyViewer,                 L"SaveViewerShortPos"sv,            ViOpt.SaveShortPos, true},
 		{FSSF_PRIVATE,           NKeyViewer,                 L"SaveViewerWrapMode"sv,            ViOpt.SaveWrapMode, false},
 		{FSSF_PRIVATE,           NKeyViewer,                 L"SaveViewMode"sv,                  ViOpt.SaveViewMode, true},
-		{FSSF_PRIVATE,           NKeyViewer,                 L"SearchEditFocus"sv,               ViOpt.SearchEditFocus, false},
-		{FSSF_PRIVATE,           NKeyViewer,                 L"SearchRegexp"sv,                  ViOpt.SearchRegexp, false},
 		{FSSF_PRIVATE,           NKeyViewer,                 L"SearchWrapStop"sv,                ViOpt.SearchWrapStop, BSTATE_CHECKED},
 		{FSSF_PRIVATE,           NKeyViewer,                 L"ShowArrows"sv,                    ViOpt.ShowArrows, true},
 		{FSSF_PRIVATE,           NKeyViewer,                 L"ShowKeyBar"sv,                    ViOpt.ShowKeyBar, true},
@@ -2143,7 +2160,7 @@ const Options::farconfig& Options::GetConfig(config_type Type) const
 template<class container, class pred>
 static const Option* GetConfigValuePtr(const container& Config, const pred& Pred)
 {
-	const auto ItemIterator = std::find_if(ALL_CONST_RANGE(Config), Pred);
+	const auto ItemIterator = std::ranges::find_if(Config, Pred);
 	return ItemIterator == Config.cend()? nullptr : ItemIterator->Value;
 }
 
@@ -2248,12 +2265,12 @@ static auto deserialise_sort_layers(string_view const LayersStr)
 
 static auto serialise_sort_layer(std::pair<panel_sort, sort_order> const& Layer)
 {
-	return format(FSTR(L"S{}:O{}"sv), Layer.first, Layer.second);
+	return far::format(L"S{}:O{}"sv, Layer.first, Layer.second);
 }
 
-static auto serialise_sort_layers(span<std::pair<panel_sort, sort_order> const> const Layers)
+static auto serialise_sort_layers(std::span<std::pair<panel_sort, sort_order> const> const Layers)
 {
-	return join(select(Layers, serialise_sort_layer), L" "sv);
+	return join(L" "sv, Layers | std::views::transform(serialise_sort_layer));
 }
 
 void Options::ReadSortLayers()
@@ -2263,7 +2280,7 @@ void Options::ReadSortLayers()
 	for (auto& [Layers, i]: enumerate(PanelSortLayers))
 	{
 		string LayersStr;
-		if (ConfigProvider().GeneralCfg()->GetValue(NKeyPanelSortLayers, str(i), LayersStr))
+		if (ConfigProvider().GeneralCfg()->GetValue(NKeyPanelSortLayers, str(i), LayersStr) && !LayersStr.empty())
 			Layers = deserialise_sort_layers(LayersStr);
 
 		if (Layers.empty())
@@ -2281,7 +2298,7 @@ void Options::SaveSortLayers(bool const Always)
 	for (const auto& [Layers, i]: enumerate(PanelSortLayers))
 	{
 		const auto DefaultLayers = default_sort_layers(static_cast<panel_sort>(i));
-		if (std::equal(ALL_CONST_RANGE(Layers), ALL_CONST_RANGE(DefaultLayers)))
+		if (std::ranges::equal(Layers, DefaultLayers))
 		{
 			Cfg.DeleteValue(NKeyPanelSortLayers, str(i));
 			continue;
@@ -2468,7 +2485,7 @@ void Options::Save(bool Manual)
 	filters::Save(Manual);
 	SavePanelModes(Manual);
 	SaveSortLayers(Manual);
-	Global->CtrlObject->Macro.SaveMacros(Manual);
+	Global->CtrlObject->Macro.SaveMacros();
 }
 
 enum
@@ -2484,7 +2501,7 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 	{
 		return Index == -1 ?
 			nullptr : // Everything is filtered out
-			view_as<const FARConfigItem*>(Dlg->GetListItemSimpleUserData(0, Index));
+			std::bit_cast<const FARConfigItem*>(Dlg->GetListItemSimpleUserData(0, Index));
 	};
 
 	const auto EditItem = [&](edit_mode const EditMode)
@@ -2510,7 +2527,7 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 
 		SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
 
-		auto& ConfigStrings = *reinterpret_cast<std::vector<string>*>(Dlg->SendMessage(DM_GETDLGDATA, 0, nullptr));
+		auto& ConfigStrings = edit_as<std::vector<string>>(Dlg->SendMessage(DM_GETDLGDATA, 0, nullptr));
 		FarListUpdate flu{ sizeof(flu), ListInfo.SelectPos, CurrentItem->MakeListItem(ConfigStrings[ListInfo.SelectPos]) };
 		Dlg->SendMessage(DM_LISTUPDATE, ac_item_listbox, &flu);
 
@@ -2548,10 +2565,10 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 
 	case DN_CONTROLINPUT:
 		{
-			const auto record = static_cast<const INPUT_RECORD*>(Param2);
-			if (Param1 == ac_item_listbox && record->EventType==KEY_EVENT)
+			const auto& record = *static_cast<INPUT_RECORD const*>(Param2);
+			if (Param1 == ac_item_listbox && record.EventType==KEY_EVENT)
 			{
-				switch (InputRecordToKey(record))
+				switch (InputRecordToKey(&record))
 				{
 				case KEY_SHIFTF1:
 					{
@@ -2590,11 +2607,11 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 					{
 						SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
 
-						static bool HideUnchanged = true;
+						m_HideUnchanged = !m_HideUnchanged;
 
 						FarListInfo ListInfo{ sizeof(ListInfo) };
 						Dlg->SendMessage(DM_LISTINFO, Param1, &ListInfo);
-						for (const auto& i: irange(ListInfo.ItemsNumber))
+						for (const auto i: std::views::iota(0uz, ListInfo.ItemsNumber))
 						{
 							FarListGetItem Item{ sizeof(Item), static_cast<intptr_t>(i) };
 
@@ -2603,7 +2620,7 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 								continue;
 
 							bool NeedUpdate = false;
-							if(HideUnchanged)
+							if(m_HideUnchanged)
 							{
 								if(!(Item.Item.Flags&LIF_CHECKED))
 								{
@@ -2625,7 +2642,6 @@ intptr_t Options::AdvancedConfigDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Para
 								Dlg->SendMessage(DM_LISTUPDATE, Param1, &UpdatedItem);
 							}
 						}
-						HideUnchanged = !HideUnchanged;
 					}
 					break;
 				}
@@ -2662,14 +2678,15 @@ bool Options::AdvancedConfig(config_type Mode)
 	std::vector<FarListItem> items;
 	items.reserve(CurrentConfig.size());
 	std::vector<string> Strings(CurrentConfig.size());
-	const auto ConfigData = zip(CurrentConfig, Strings);
-	std::transform(ALL_CONST_RANGE(ConfigData), std::back_inserter(items), [](const auto& i) { return std::get<0>(i).MakeListItem(std::get<1>(i)); });
+	std::ranges::transform(zip(CurrentConfig, Strings), std::back_inserter(items), [](const auto& i) { return std::get<0>(i).MakeListItem(std::get<1>(i)); });
 
 	FarList Items{ sizeof(Items), items.size(), items.data() };
 
 	AdvancedConfigDlg[ac_item_listbox].ListItems = &Items;
 
-	const auto Dlg = Dialog::create(AdvancedConfigDlg, &Options::AdvancedConfigDlgProc, &Strings);
+	m_HideUnchanged = false;
+
+	const auto Dlg = Dialog::create(AdvancedConfigDlg, std::bind_front(&Options::AdvancedConfigDlgProc, this), &Strings);
 	Dlg->SetHelp(L"FarConfig"sv);
 	Dlg->SetPosition({ -1, -1, DlgWidth, DlgHeight });
 	Dlg->SetId(AdvancedConfigId);
@@ -2731,7 +2748,7 @@ void Options::ReadPanelModes()
 		}
 	};
 
-	for (auto& [Item, Index]: enumerate(span(m_ViewSettings).subspan(0, predefined_panel_modes_count)))
+	for (auto& [Item, Index]: enumerate(std::span(m_ViewSettings).subspan(0, predefined_panel_modes_count)))
 	{
 		if (const auto Key = cfg->FindByName(cfg->root_key, str(Index)))
 			ReadMode(Key, Item);
@@ -2775,7 +2792,7 @@ void Options::SavePanelModes(bool always)
 		cfg->SetValue(Key, ModesFlagsName, Item.Flags);
 	};
 
-	for (const auto& [Value, Index]: enumerate(span(ViewSettings).subspan(0, predefined_panel_modes_count)))
+	for (const auto& [Value, Index]: enumerate(std::span(ViewSettings).subspan(0, predefined_panel_modes_count)))
 	{
 		SaveMode(cfg->root_key, Value, Index);
 	}
@@ -2787,7 +2804,7 @@ void Options::SavePanelModes(bool always)
 
 	const auto ModesKey = cfg->CreateKey(cfg->root_key, CustomModesKeyName);
 
-	for (const auto& [Value, Index]: enumerate(span(ViewSettings).subspan(predefined_panel_modes_count)))
+	for (const auto& [Value, Index]: enumerate(std::span(ViewSettings).subspan(predefined_panel_modes_count)))
 	{
 		SaveMode(ModesKey, Value, Index);
 	}
@@ -2940,7 +2957,7 @@ void Options::ShellOptions(bool LastCommand, const MOUSE_EVENT_RECORD *MouseEven
 {
 	const auto ApplyViewModesNames = [this](menu_item* Menu)
 	{
-		for (const auto& i: irange(predefined_panel_modes_count))
+		for (const auto i: std::views::iota(0uz, predefined_panel_modes_count))
 		{
 			if (!ViewSettings[i].Name.empty())
 				Menu[RealModeToDisplay(i)].Name = ViewSettings[i].Name;
@@ -3337,7 +3354,7 @@ void Options::ShellOptions(bool LastCommand, const MOUSE_EVENT_RECORD *MouseEven
 							far_language::instance().load(Global->g_strFarPath, InterfaceLanguage, static_cast<int>(lng::MNewFileName + 1));
 							strLanguage = InterfaceLanguage;
 						}
-						catch (const far_known_exception& e)
+						catch (far_known_exception const& e)
 						{
 							Message(MSG_WARNING,
 								msg(lng::MError),

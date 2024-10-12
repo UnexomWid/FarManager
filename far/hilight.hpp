@@ -79,21 +79,15 @@ namespace highlight
 			FarColor FileColor;
 			FarColor MarkColor;
 
-			bool operator ==(const colors& rhs) const
-			{
-				return FileColor == rhs.FileColor && MarkColor == rhs.MarkColor;
-			}
+			bool operator==(const colors&) const = default;
 		};
 
 		struct mark
 		{
-			wchar_t Char{};
-			bool Transparent{true};
+			string Mark;
+			bool Inherit{true};
 
-			bool operator ==(const mark& rhs) const
-			{
-				return Char == rhs.Char && Transparent == rhs.Transparent;
-			}
+			bool operator==(const mark&) const = default;
 		};
 
 	public:
@@ -101,10 +95,7 @@ namespace highlight
 		colors_array Color;
 		mark Mark;
 
-		bool operator==(const element& rhs) const
-		{
-			return Color == rhs.Color && Mark == rhs.Mark;
-		}
+		bool operator==(const element&) const = default;
 	};
 
 	class configuration: noncopyable

@@ -144,10 +144,10 @@ void Grabber::CopyGrabbedArea(bool Append, bool VerticalBlock)
 	const auto Eol = eol::system.str();
 	const auto CharWidthEnabled = char_width::is_enabled();
 
-	for (const auto& i: irange(CharBuf.height()))
+	for (const auto i: std::views::iota(0uz, CharBuf.height()))
 	{
 		const auto& MatrixLine = CharBuf[i];
-		auto Begin = MatrixLine.cbegin(), End = MatrixLine.cend();
+		auto Begin = MatrixLine.begin(), End = MatrixLine.end();
 
 		const auto IsFirstLine = i == 0;
 		const auto IsLastLine = i == CharBuf.height() - 1;
@@ -159,11 +159,12 @@ void Grabber::CopyGrabbedArea(bool Append, bool VerticalBlock)
 		}
 
 		Line.clear();
-		std::optional<wchar_t> LeadingChar;
 
 		if (CharWidthEnabled)
 		{
-			for (const auto& Char: span(Begin, End))
+			std::optional<wchar_t> LeadingChar;
+
+			for (const auto& Char: std::span(Begin, End))
 			{
 				if (LeadingChar && Char.Char == *LeadingChar && Char.Attributes.Flags & COMMON_LVB_TRAILING_BYTE)
 				{
@@ -183,7 +184,7 @@ void Grabber::CopyGrabbedArea(bool Append, bool VerticalBlock)
 		}
 		else
 		{
-			std::transform(Begin, End, std::back_inserter(Line), [](const FAR_CHAR_INFO& Char){ return Char.Char; });
+			std::ranges::transform(Begin, End, std::back_inserter(Line), &FAR_CHAR_INFO::Char);
 		}
 
 		bool AddEol = !IsLastLine;
@@ -261,13 +262,13 @@ void Grabber::DisplayObject()
 		matrix<FAR_CHAR_INFO> CharBuf(ToY - FromY + 1, ToX - FromX + 1);
 		GetText({ FromX, FromY, ToX, ToY }, CharBuf);
 
-		for (const auto& Y: irange(FromY, ToY + 1))
+		for (const auto Y: std::views::iota(FromY, ToY + 1))
 		{
-			for (const auto& X: irange(FromX, ToX + 1))
+			for (const auto X: std::views::iota(FromX, ToX + 1))
 			{
 				const auto& CurColor = SaveScr->ScreenBuf[Y][X].Attributes;
 				auto& Destination = CharBuf[Y - Y1][X - FromX].Attributes;
-				Destination = CurColor;
+				Destination = colors::resolve_defaults(CurColor);
 
 				if (m_StreamSelection)
 				{
@@ -295,15 +296,17 @@ void Grabber::DisplayObject()
 					}
 				}
 
-				colors::make_invert(Destination.BackgroundColor, CurColor.IsBg4Bit());
-				colors::make_invert(Destination.ForegroundColor, CurColor.IsFg4Bit());
+				colors::make_invert(Destination.ForegroundColor, Destination.IsFgIndex());
+				colors::make_invert(Destination.BackgroundColor, Destination.IsBgIndex());
+				colors::make_invert(Destination.UnderlineColor, Destination.IsUnderlineIndex());
+				flags::clear(Destination.Flags, FCF_FOREIGN);
 			}
 		}
 
 		PutText({ FromX, FromY, ToX, ToY }, CharBuf.data());
 	}
 
-	SetCursorType(true, 60);
+	SetCursorType(true, Global->Opt->GrabberCursorSize);
 }
 
 
@@ -680,8 +683,10 @@ bool Grabber::ProcessKey(const Manager::Key& Key)
 
 bool Grabber::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 {
-	if (MouseEvent->dwEventFlags==DOUBLE_CLICK ||
-	        (!MouseEvent->dwEventFlags && (MouseEvent->dwButtonState & RIGHTMOST_BUTTON_PRESSED)))
+	if (
+		MouseEvent->dwEventFlags==DOUBLE_CLICK ||
+		(IsMouseButtonEvent(MouseEvent->dwEventFlags) && (MouseEvent->dwButtonState & RIGHTMOST_BUTTON_PRESSED))
+	)
 	{
 		ProcessKey(Manager::Key(KEY_ENTER));
 		return true;
@@ -690,7 +695,7 @@ bool Grabber::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 	if (IntKeyState.MouseButtonState!=FROM_LEFT_1ST_BUTTON_PRESSED)
 		return false;
 
-	if (!MouseEvent->dwEventFlags)
+	if (IsMouseButtonEvent(MouseEvent->dwEventFlags))
 	{
 		ResetArea = true;
 	}

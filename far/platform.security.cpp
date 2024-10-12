@@ -36,7 +36,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.security.hpp"
 
 // Internal:
-#include "exception.hpp"
 #include "log.hpp"
 
 // Platform:
@@ -52,12 +51,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace
 {
-	static const auto& lookup_privilege_value(const wchar_t* Name)
+	const auto& lookup_privilege_value(const wchar_t* Name)
 	{
 		static unordered_string_map<std::optional<LUID>> s_Cache;
 		static os::critical_section s_CS;
 
-		SCOPED_ACTION(std::lock_guard)(s_CS);
+		SCOPED_ACTION(std::scoped_lock)(s_CS);
 
 		const auto [Iterator, IsEmplaced] = s_Cache.try_emplace(Name);
 
@@ -69,16 +68,16 @@ namespace
 			if (LookupPrivilegeValue(nullptr, MapKey.c_str(), &Luid))
 				MapValue = Luid;
 			else
-				LOGWARNING(L"LookupPrivilegeValue({}): {}"sv, MapKey, last_error());
+				LOGWARNING(L"LookupPrivilegeValue({}): {}"sv, MapKey, os::last_error());
 		}
 
 		return MapValue;
 	}
+}
 
-	static bool operator==(const LUID& a, const LUID& b)
-	{
-		return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
-	}
+static bool operator==(const LUID& a, const LUID& b)
+{
+	return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
 }
 
 namespace os::security
@@ -119,7 +118,7 @@ namespace os::security
 		return handle(Handle);
 	}
 
-	privilege::privilege(span<const wchar_t* const> const Names)
+	privilege::privilege(std::span<const wchar_t* const> const Names)
 	{
 		if (Names.empty())
 			return;
@@ -173,11 +172,11 @@ namespace os::security
 	{
 		block_ptr<TOKEN_PRIVILEGES> Result(1024);
 
-		if (!os::detail::ApiDynamicReceiver(Result,
-			[&](span<TOKEN_PRIVILEGES> Buffer)
+		if (!os::detail::ApiDynamicReceiver(Result.bytes(),
+			[&](std::span<std::byte> const Buffer)
 			{
 				DWORD LengthNeeded = 0;
-				if (!GetTokenInformation(TokenHandle, TokenPrivileges, Buffer.data(), static_cast<DWORD>(Buffer.size()), &LengthNeeded))
+				if (!GetTokenInformation(TokenHandle, TokenPrivileges, static_cast<TOKEN_PRIVILEGES*>(static_cast<void*>(Buffer.data())), static_cast<DWORD>(Buffer.size()), &LengthNeeded))
 					return static_cast<size_t>(LengthNeeded);
 				return Buffer.size();
 			},
@@ -185,7 +184,7 @@ namespace os::security
 			{
 				return ReturnedSize > AllocatedSize;
 			},
-			[](span<const TOKEN_PRIVILEGES>)
+			[](std::span<std::byte const>)
 			{}
 		))
 		{
@@ -195,7 +194,7 @@ namespace os::security
 		return Result;
 	}
 
-	bool privilege::check(span<const wchar_t* const> const Names)
+	bool privilege::check(std::span<const wchar_t* const> const Names)
 	{
 		const auto Token = open_current_process_token(TOKEN_QUERY);
 		if (!Token)
@@ -211,15 +210,15 @@ namespace os::security
 			return false;
 		}
 
-		const span Privileges(TokenPrivileges->Privileges, TokenPrivileges->PrivilegeCount);
+		const std::span Privileges(TokenPrivileges->Privileges, TokenPrivileges->PrivilegeCount);
 
-		return std::all_of(ALL_CONST_RANGE(Names), [&](const wchar_t* const Name)
+		return std::ranges::all_of(Names, [&](const wchar_t* const Name)
 		{
 			const auto& Luid = lookup_privilege_value(Name);
 			if (!Luid)
 				return false;
 
-			const auto ItemIterator = std::find_if(ALL_CONST_RANGE(Privileges), [&](const auto& Item) { return Item.Luid == *Luid; });
+			const auto ItemIterator = std::ranges::find(Privileges, *Luid, &LUID_AND_ATTRIBUTES::Luid);
 			return ItemIterator != Privileges.end() && ItemIterator->Attributes & (SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT);
 		});
 	}

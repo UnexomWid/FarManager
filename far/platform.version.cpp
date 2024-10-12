@@ -42,6 +42,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.reg.hpp"
 
 // Common:
+#include "common.hpp"
 #include "common/string_utils.hpp"
 
 // External:
@@ -56,7 +57,7 @@ namespace os::version
 	{
 		unsigned Length;
 		T* Result;
-		return VerQueryValue(Data.data(), null_terminated(SubBlock).c_str(), reinterpret_cast<void**>(&Result), &Length) && Length? Result : nullptr;
+		return VerQueryValue(Data.data(), null_terminated(SubBlock).c_str(), std::bit_cast<void**>(&Result), &Length) && Length? Result : nullptr;
 	}
 
 	bool file_version::read(string_view const Filename)
@@ -76,8 +77,8 @@ namespace os::version
 		if (!Translation)
 			return false;
 
-		m_BlockPath = format(
-			FSTR(L"\\StringFileInfo\\{:04X}{:04X}\\"sv),
+		m_BlockPath = far::format(
+			L"\\StringFileInfo\\{:04X}{:04X}\\"sv,
 			extract_integer<WORD, 0>(*Translation),
 			extract_integer<WORD, 1>(*Translation)
 		);
@@ -95,6 +96,28 @@ namespace os::version
 		return get_value<VS_FIXEDFILEINFO>(m_Buffer, L"\\"sv);
 	}
 
+	string file_version::version() const
+	{
+		if (const auto Str = get_string(L"FileVersion"sv))
+			return string(Str);
+
+		const auto FixedInfo = get_fixed_info();
+		if (!FixedInfo)
+			return {};
+
+		return far::format(L"{}.{}.{}.{}"sv,
+			extract_integer<WORD, 1>(FixedInfo->dwFileVersionMS),
+			extract_integer<WORD, 0>(FixedInfo->dwFileVersionMS),
+			extract_integer<WORD, 1>(FixedInfo->dwFileVersionLS),
+			extract_integer<WORD, 0>(FixedInfo->dwFileVersionLS)
+		);
+	}
+
+	string_view file_version::description() const
+	{
+		return NullToEmpty(get_string(L"FileDescription"sv));
+	}
+
 
 	template<DWORD... Components>
 	static unsigned long long condition_mask(DWORD const Operation)
@@ -104,30 +127,37 @@ namespace os::version
 
 	bool is_win10_build_or_later(DWORD const Build)
 	{
-		static const auto Result = [&]
+		OSVERSIONINFOEXW osvi
 		{
-			OSVERSIONINFOEXW osvi
-			{
-				sizeof(osvi),
-				extract_integer<BYTE, 1>(_WIN32_WINNT_WIN10),
-				extract_integer<BYTE, 0>(_WIN32_WINNT_WIN10),
-				Build
-			};
+			sizeof(osvi),
+			extract_integer<BYTE, 1>(_WIN32_WINNT_WIN10),
+			extract_integer<BYTE, 0>(_WIN32_WINNT_WIN10),
+			Build
+		};
 
-			const auto ConditionMask = condition_mask<
-				VER_MAJORVERSION,
-				VER_MINORVERSION,
-				VER_BUILDNUMBER
-			>(VER_GREATER_EQUAL);
+		const auto ConditionMask = condition_mask<
+			VER_MAJORVERSION,
+			VER_MINORVERSION,
+			VER_BUILDNUMBER
+		>(VER_GREATER_EQUAL);
 
-			return VerifyVersionInfo(
-				&osvi,
-				VER_MAJORVERSION |
-				VER_MINORVERSION |
-				VER_BUILDNUMBER,
-				ConditionMask) != FALSE;
-		}();
+		return VerifyVersionInfo(
+			&osvi,
+			VER_MAJORVERSION |
+			VER_MINORVERSION |
+			VER_BUILDNUMBER,
+			ConditionMask) != FALSE;
+	}
 
+	bool is_win10_1607_or_later()
+	{
+		static const auto Result = is_win10_build_or_later(14393);
+		return Result;
+	}
+
+	bool is_win10_1703_or_later()
+	{
+		static const auto Result = is_win10_build_or_later(15063);
 		return Result;
 	}
 
@@ -135,68 +165,149 @@ namespace os::version
 	{
 		file_version Version;
 		if (!Version.read(Name))
-			return L"Unknown"s;
+			return last_error().Win32ErrorStr();
 
-		if (const auto Str = Version.get_string(L"FileVersion"sv))
+		if (auto Str = Version.version(); !Str.empty())
 			return Str;
 
-		const auto FixedInfo = Version.get_fixed_info();
-		if (!FixedInfo)
-			return L"Unknown"s;
-
-		return format(FSTR(L"{}.{}.{}.{}"sv),
-			extract_integer<WORD, 1>(FixedInfo->dwFileVersionMS),
-			extract_integer<WORD, 0>(FixedInfo->dwFileVersionMS),
-			extract_integer<WORD, 1>(FixedInfo->dwFileVersionLS),
-			extract_integer<WORD, 0>(FixedInfo->dwFileVersionLS)
-		);
+		return last_error().Win32ErrorStr();
 	}
 
-	static bool get_os_version(OSVERSIONINFOEX& Info)
+	static auto get_os_version()
 	{
-		const auto InfoPtr = edit_as<OSVERSIONINFO*>(&Info);
+		OSVERSIONINFOEX Info{ sizeof(Info) };
 
-		if (imports.RtlGetVersion && imports.RtlGetVersion(InfoPtr) == STATUS_SUCCESS)
-			return true;
+		const auto InfoPtr = std::bit_cast<OSVERSIONINFO*>(&Info);
+
+		if (imports.RtlGetVersion && NT_SUCCESS(imports.RtlGetVersion(InfoPtr)))
+			return Info;
 
 WARNING_PUSH()
 WARNING_DISABLE_MSC(4996) // 'GetVersionExW': was declared deprecated. So helpful. :(
 WARNING_DISABLE_CLANG("-Wdeprecated-declarations")
-		return GetVersionEx(InfoPtr) != FALSE;
+		if (GetVersionEx(InfoPtr))
+			return Info;
 WARNING_POP()
-}
+
+		struct peb_version
+		{
+			ULONG OSMajorVersion;
+			ULONG OSMinorVersion;
+			USHORT OSBuildNumber;
+			USHORT OSCSDVersion;
+			ULONG OSPlatformId;
+		};
+
+		const auto VersionOffset =
+#ifdef _WIN64
+			0x0118
+#else
+			0xA4
+#endif
+		;
+
+WARNING_PUSH()
+WARNING_DISABLE_GCC("-Warray-bounds")
+		const auto Teb = NtCurrentTeb();
+WARNING_POP()
+
+		const auto& PebVersion = view_as<peb_version>(Teb->ProcessEnvironmentBlock, VersionOffset);
+
+		Info.dwMajorVersion = PebVersion.OSMajorVersion;
+		Info.dwMinorVersion = PebVersion.OSMinorVersion;
+		Info.dwBuildNumber = PebVersion.OSBuildNumber;
+		Info.dwPlatformId = PebVersion.OSPlatformId;
+		Info.wServicePackMajor = extract_integer<uint8_t, 1>(PebVersion.OSCSDVersion);
+		Info.wServicePackMinor = extract_integer<uint8_t, 0>(PebVersion.OSCSDVersion);
+
+		return Info;
+	}
+
+	static auto windows_platform(int const PlatformId)
+	{
+		switch (PlatformId)
+		{
+		case VER_PLATFORM_WIN32_NT:
+			return L"Windows NT"s;
+		default:
+			return far::format(L"Unknown ({})"sv, PlatformId);
+		}
+	}
+
+	static auto windows_product_type(int const ProductType)
+	{
+		switch (ProductType)
+		{
+		case VER_NT_WORKSTATION:
+			return L"Workstation"s;
+		case VER_NT_DOMAIN_CONTROLLER:
+			return L"Domain Controller"s;
+		case VER_NT_SERVER:
+			return L"Server"s;
+		default:
+			return far::format(L"Unknown ({})"sv, ProductType);
+		}
+	}
+
+	static auto windows_service_pack(OSVERSIONINFOEX const& Info)
+	{
+		if (*Info.szCSDVersion)
+			return far::format(L" {} ({}.{})"sv, Info.szCSDVersion, Info.wServicePackMajor, Info.wServicePackMinor);
+
+		if (Info.wServicePackMajor)
+			return far::format(L" Service Pack {}.{}"sv, Info.wServicePackMajor, Info.wServicePackMinor);
+
+		return L""s;
+	}
 
 	static string os_version_from_api()
 	{
-		OSVERSIONINFOEX Info{ sizeof(Info) };
-		if (!get_os_version(Info))
-			return L"Unknown"s;
+		const auto Info = get_os_version();
 
-		return format(FSTR(L"{}.{}.{}.{}.{}.{}.{}.{}"sv),
+		DWORD ProductType;
+		if (!imports.GetProductInfo || !imports.GetProductInfo(-1, -1, -1, -1, &ProductType))
+			ProductType = 0;
+
+		return far::format(L"{} {} {}.{}.{}{}, 0x{:X}/0x{:X}"sv,
+			windows_platform(Info.dwPlatformId),
+			windows_product_type(Info.wProductType),
 			Info.dwMajorVersion,
 			Info.dwMinorVersion,
 			Info.dwBuildNumber,
-			Info.dwPlatformId,
-			Info.wServicePackMajor,
-			Info.wServicePackMinor,
+			windows_service_pack(Info),
 			Info.wSuiteMask,
-			Info.wProductType
+			ProductType
 		);
 	}
 
 	// Mental OS - mental methods *facepalm*
 	static string os_version_from_registry()
 	{
-		const auto Key = reg::key::open(reg::key::local_machine, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"sv, KEY_QUERY_VALUE);
-		if (!Key)
-			return {};
+		static const auto NativeKeyFlag = []
+		{
+			return
+#ifndef _WIN64
+				IsWow64Process()? KEY_WOW64_64KEY :
+#endif
+				0;
+		}();
 
-		string DisplayVersion, CurrentBuild;
-		unsigned UBR;
-		if ((!Key.get(L"DisplayVersion"sv, DisplayVersion) && !Key.get(L"ReleaseId"sv, DisplayVersion)) || !Key.get(L"CurrentBuild"sv, CurrentBuild) || !Key.get(L"UBR"sv, UBR))
-			return {};
+		try
+		{
+			const auto Key = reg::key::local_machine.open(L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"sv, KEY_QUERY_VALUE | NativeKeyFlag);
 
-		return format(FSTR(L" (version {}, OS build {}.{})"sv), DisplayVersion, CurrentBuild, UBR);
+			const auto ProductName = Key->get_string(L"ProductName"sv);
+			const auto DisplayVersion = Key->get_string(L"DisplayVersion"sv);
+			const auto ReleaseId = Key->get_string(L"ReleaseId"sv);
+			const auto CurrentBuild = Key->get_string(L"CurrentBuild"sv);
+			const auto UBR = Key->get_dword(L"UBR"sv);
+
+			return far::format(L" ({}, version {}, OS build {}.{})"sv, *ProductName, DisplayVersion? *DisplayVersion : *ReleaseId, *CurrentBuild, *UBR);
+		}
+		catch (far_exception const&)
+		{
+			return {};
+		}
 	}
 
 	string os_version()

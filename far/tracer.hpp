@@ -36,11 +36,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Platform:
 #include "platform.concurrency.hpp"
+#include "platform.debug.hpp"
 
 // Common:
 #include "common/function_ref.hpp"
 #include "common/nifty_counter.hpp"
-#include "common/range.hpp"
 
 // External:
 
@@ -58,9 +58,17 @@ namespace tracer_detail
 		tracer();
 		~tracer();
 
-		std::vector<uintptr_t> get(string_view Module, CONTEXT const& ContextRecord, HANDLE ThreadHandle);
-		void get_symbols(string_view Module, span<uintptr_t const> Trace, function_ref<void(string&& Line)> Consumer) const;
-		void get_symbol(string_view Module, const void* Ptr, string& Address, string& Name, string& Source) const;
+		void get_symbols(string_view Module, std::span<os::debug::stack_frame const> Trace, function_ref<void(string&& Line)> Consumer) const;
+		void get_symbol(string_view Module, const void* Ptr, string& AddressStr, string& Name, string& Source) const;
+
+		// Same as os::debug::*, but with symbols initialized
+		std::vector<os::debug::stack_frame> current_stacktrace(string_view Module, size_t FramesToSkip = 0, size_t FramesToCapture = std::numeric_limits<size_t>::max()) const;
+		std::vector<os::debug::stack_frame> stacktrace(string_view Module, CONTEXT ContextRecord, HANDLE ThreadHandle) const;
+		std::vector<os::debug::stack_frame> exception_stacktrace(string_view Module) const;
+
+		void current_stacktrace(string_view Module, function_ref<void(string&& Line)> Consumer, size_t FramesToSkip = 0, size_t FramesToCapture = std::numeric_limits<size_t>::max()) const;
+		void stacktrace(string_view Module, function_ref<void(string&& Line)> Consumer, CONTEXT ContextRecord, HANDLE ThreadHandle) const;
+		void exception_stacktrace(string_view Module, function_ref<void(string&& Line)> Consumer) const;
 
 		class with_symbols
 		{
@@ -77,7 +85,8 @@ namespace tracer_detail
 
 		os::concurrency::critical_section m_CS;
 		std::unique_ptr<std::unordered_map<uintptr_t, map_file>> m_MapFiles;
-		size_t m_SymInitialised{};
+		size_t m_SymInitializeLevel{};
+		bool m_SymInitialized{};
 	};
 }
 

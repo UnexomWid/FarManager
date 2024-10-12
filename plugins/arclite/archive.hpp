@@ -15,13 +15,24 @@ extern const ArcType c_wim;
 extern const ArcType c_tar;
 extern const ArcType c_SWFc;
 extern const ArcType c_dmg;
+//
 extern const ArcType c_hfs;
+extern const ArcType c_fat;
+extern const ArcType c_ntfs;
+extern const ArcType c_ext4;
+extern const ArcType c_apfs;
+extern const ArcType c_mbr;
+extern const ArcType c_gpt;
+//
+extern const ArcType c_xfat;
 
 extern const wchar_t* c_method_copy;   // pseudo method
 
 extern const wchar_t* c_method_lzma;   // standard 7z methods
 extern const wchar_t* c_method_lzma2;  //
 extern const wchar_t* c_method_ppmd;   //
+extern const wchar_t* c_method_deflate;
+extern const wchar_t* c_method_deflate64;
 
 extern const UInt64 c_min_volume_size;
 
@@ -217,7 +228,6 @@ private:
   UInt32 error_flags, warning_flags;
   std::wstring error_text, warning_text;
   IInStream *base_stream;
-  bool open(IInStream* in_stream, const ArcType& type);
   UInt64 get_physize();
   UInt64 archive_filesize();
   UInt64 get_skip_header(IInStream *stream, const ArcType& type);
@@ -239,6 +249,7 @@ public:
   }
   static std::unique_ptr<Archives> open(const OpenOptions& options);
   void close();
+  bool open(IInStream* in_stream, const ArcType& type, const bool allow_tail = false);
   void reopen();
   bool is_open() const {
     return in_arc;
@@ -273,6 +284,9 @@ public:
   unsigned get_crc(UInt32 index) const;
   bool get_anti(UInt32 index) const;
   bool get_isaltstream(UInt32 index) const;
+
+  UInt64 get_offset(UInt32 index) const;
+  //std::wstring get_filesystem(UInt32 index) const;
 
   void read_open_results();
   std::list<std::wstring> get_open_errors() const;

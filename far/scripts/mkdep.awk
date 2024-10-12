@@ -4,17 +4,17 @@ BEGIN{
   split(ENVIRON["FORCEINCLUDELIST"], force_include, " ")
   if (compiler=="gcc")
   {
+    dirsep="/";
     out="$(OBJDIR)";
     obj="o";
     rc="rc.o"
-    dirsep="/";
   }
   else
   {
-    out="$(INTDIR)";
+    dirsep="\\";
+    out="$(INTDIR)" dirsep;
     obj="obj";
     rc="res"
-    dirsep="\\";
   }
 }
 {
@@ -38,7 +38,7 @@ BEGIN{
 
   if(path_part == "" && (ext == obj || ext == rc))
   {
-    print out dirsep filename "." ext ":";
+    print out filename "." ext ":";
     print " " $0;
 
     if (is_cpp)
@@ -46,6 +46,8 @@ BEGIN{
       for (i in force_include)
         print " " force_include[i];
     }
+    else if (ext == obj)
+        print " disabled_warnings.hpp"
   }
   else
   {

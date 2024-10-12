@@ -101,9 +101,9 @@ intptr_t message_context::DlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void*
 			if (di.Type==DI_EDIT)
 			{
 				const auto& Color = colors::PaletteColorToFarColor(IsWarningStyle? COL_WARNDIALOGTEXT : COL_DIALOGTEXT);
-				const auto Colors = static_cast<FarDialogItemColors*>(Param2);
-				Colors->Colors[0] = Color;
-				Colors->Colors[2] = Color;
+				const auto& Colors = *static_cast<FarDialogItemColors const*>(Param2);
+				Colors.Colors[0] = Color;
+				Colors.Colors[2] = Color;
 			}
 		}
 		break;
@@ -112,13 +112,18 @@ intptr_t message_context::DlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void*
 			const auto record = static_cast<const INPUT_RECORD *>(Param2);
 			if (record->EventType==KEY_EVENT)
 			{
-				const auto key = InputRecordToKey(record);
-				switch(key)
+				switch(InputRecordToKey(record))
 				{
 				case KEY_F3:
 					if(ErrorState)
 					{
-						const auto Errors = ErrorState->format_errors();
+						const string Errors[]
+						{
+							ErrorState->ErrnoStr(),
+							ErrorState->Win32ErrorStr(),
+							ErrorState->NtErrorStr(),
+						};
+
 						const auto MaxStr = std::max(Errors[0].size(), Errors[1].size());
 						const auto SysArea = 5 * 2;
 						const auto FieldsWidth = std::max(80 - SysArea, std::min(static_cast<int>(MaxStr), ScrX - SysArea));
@@ -182,7 +187,7 @@ static message_result MessageImpl(
 	std::vector<string>&& Strings,
 	std::vector<string>&& Buttons,
 	const error_state_ex* const ErrorState,
-	span<string const> const Inserts,
+	std::span<string const> const Inserts,
 	string_view const HelpTopic,
 	Plugin* const PluginNumber,
 	const UUID* const Id
@@ -192,24 +197,28 @@ static message_result MessageImpl(
 
 	Context.IsWarningStyle = (Flags&MSG_WARNING) != 0;
 
-	string strErrStr;
+	string ErrorMessage, SystemErrorMessage;
 
 	if (ErrorState)
 	{
 		Context.ErrorState = *ErrorState;
-		strErrStr = Context.ErrorState->format_error();
-		if (!strErrStr.empty())
+		ErrorMessage = Context.ErrorState->What;
+
+		if (Context.ErrorState->any())
+			SystemErrorMessage = Context.ErrorState->system_error();
+
+		if (!SystemErrorMessage.empty())
 		{
 			size_t index = 1;
 			for (const auto& i: Inserts)
 			{
-				replace(strErrStr, L'%' + str(index), i);
+				replace(SystemErrorMessage, L'%' + str(index), i);
 				++index;
 			}
 		}
 	}
 
-	auto MaxLength = !Strings.empty()? std::max_element(ALL_CONST_RANGE(Strings), [](const auto& a, const auto &b) { return a.size() < b.size(); })->size() : 0;
+	auto MaxLength = !Strings.empty()? std::ranges::fold_left(Strings, 0uz, [](size_t const Value, string const& i){ return std::max(Value, i.size()); }) : 0;
 
 	string strClipText;
 
@@ -221,7 +230,7 @@ static message_result MessageImpl(
 		append(strClipText, Title, Eol, Eol);
 	}
 
-	size_t BtnLength = std::accumulate(ALL_CONST_RANGE(Buttons), size_t{}, [](size_t Result, const auto& i)
+	size_t BtnLength = std::ranges::fold_left(Buttons, 0uz, [](size_t Result, const auto& i)
 	{
 		return Result + HiStrlen(i) + 2 + 2 + 1; // "[ ", " ]", " "
 	});
@@ -237,42 +246,34 @@ static message_result MessageImpl(
 
 	MaxLength = std::min(MaxLength, MAX_MESSAGE_WIDTH);
 
-	join(strClipText, Strings, Eol);
+	join(strClipText, Eol, Strings);
 	append(strClipText, Eol, Eol);
 
-	if (!strErrStr.empty())
+	if (!ErrorMessage.empty() || !SystemErrorMessage.empty())
 	{
-		append(strClipText, strErrStr, Eol, Eol);
+		if (!ErrorMessage.empty())
+			append(strClipText, ErrorMessage, Eol);
 
-		// вычисление "красивого" размера
-		auto LenErrStr = strErrStr.size();
-
-		if (LenErrStr > MAX_MESSAGE_WIDTH)
-		{
-			// половина меньше?
-			if (LenErrStr / 2 < MAX_MESSAGE_WIDTH)
-			{
-				// а половина + 1/3?
-				if ((LenErrStr + LenErrStr / 3) / 2 < MAX_MESSAGE_WIDTH)
-					LenErrStr=(LenErrStr+LenErrStr/3)/2;
-				else
-					LenErrStr/=2;
-			}
-			else
-				LenErrStr = MAX_MESSAGE_WIDTH;
-		}
+		if (!SystemErrorMessage.empty())
+			append(strClipText, SystemErrorMessage, Eol, Eol);
 
 		if (!Strings.empty())
 			Strings.emplace_back(L"\x1"sv);
 
-		for (const auto& i: wrapped_text(strErrStr, LenErrStr))
+		const auto add_wrapped = [&](string_view const Str)
 		{
-			Strings.emplace_back(i);
-			MaxLength = std::max(MaxLength, i.size());
-		}
+			for (const auto& i : wrapped_text(Str, MAX_MESSAGE_WIDTH))
+			{
+				Strings.emplace_back(i);
+				MaxLength = std::max(MaxLength, i.size());
+			}
+		};
+
+		add_wrapped(ErrorMessage);
+		add_wrapped(SystemErrorMessage);
 	}
 
-	join(strClipText, Buttons, L" "sv);
+	join(strClipText, L" "sv, Buttons);
 
 	rectangle Position;
 
@@ -404,11 +405,18 @@ static message_result MessageImpl(
 		clear_and_shrink(Strings);
 		clear_and_shrink(Buttons);
 
-		const auto Dlg = Dialog::create(MsgDlg, &message_context::DlgProc, &Context, &strClipText);
+		const auto Dlg = Dialog::create(MsgDlg, std::bind_front(&message_context::DlgProc, &Context), &strClipText);
 		if (Position.left == -1)
 			Position.left = 0;
 		if (Position.top == -1)
 			Position.top = 0;
+
+		// Make it "legally" centered:
+		Position.right = Position.width();
+		Position.left = -1;
+		Position.bottom = Position.height();
+		Position.top = -1;
+
 		Dlg->SetPosition(Position);
 		if(Id)
 			Dlg->SetId(*Id);
@@ -439,12 +447,12 @@ static message_result MessageImpl(
 
 
 	// *** Без Диалога! ***
-	SetCursorType(false, 0);
+	HideCursor();
 
 	if (!(Flags & MSG_KEEPBACKGROUND))
 	{
 		SetScreen(Position, L' ', colors::PaletteColorToFarColor((Flags & MSG_WARNING)? COL_WARNDIALOGTEXT : COL_DIALOGTEXT));
-		DropShadow(Position, true);
+		DropShadow(Position);
 		Box({ Position.left + 3, Position.top + 1, Position.right - 3, Position.bottom - 1 }, colors::PaletteColorToFarColor((Flags & MSG_WARNING)? COL_WARNDIALOGBOX : COL_DIALOGBOX), DOUBLE_BOX);
 	}
 
@@ -458,7 +466,7 @@ static message_result MessageImpl(
 		Text(concat(L' ', strTempTitle, L' '));
 	}
 
-	for (const auto& i: irange(Strings.size()))
+	for (const auto i: std::views::iota(0uz, Strings.size()))
 	{
 		const auto& SrcItem = Strings[i];
 
@@ -517,7 +525,7 @@ message_result Message(unsigned const Flags, string_view const Title, std::vecto
 {
 	std::vector<string> StrButtons;
 	StrButtons.reserve(Buttons.size());
-	std::transform(ALL_CONST_RANGE(Buttons), std::back_inserter(StrButtons), msg);
+	std::ranges::transform(Buttons, std::back_inserter(StrButtons), msg);
 
 	return MessageImpl(Flags, Title, std::move(Strings), std::move(StrButtons), nullptr, {}, HelpTopic, nullptr, Id);
 }
@@ -526,7 +534,7 @@ message_result Message(unsigned const Flags, const error_state_ex& ErrorState, s
 {
 	std::vector<string> StrButtons;
 	StrButtons.reserve(Buttons.size());
-	std::transform(ALL_CONST_RANGE(Buttons), std::back_inserter(StrButtons), msg);
+	std::ranges::transform(Buttons, std::back_inserter(StrButtons), msg);
 
 	return MessageImpl(Flags, Title, std::move(Strings), std::move(StrButtons), &ErrorState, Inserts, HelpTopic, nullptr, Id);
 }

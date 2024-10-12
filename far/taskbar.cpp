@@ -38,10 +38,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Internal:
 #include "console.hpp"
-#include "exception.hpp"
 #include "log.hpp"
+#include "mix.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.com.hpp"
 #include "platform.concurrency.hpp"
 #include "platform.debug.hpp"
@@ -65,17 +66,23 @@ public:
 
 		m_State = State;
 
+		console.set_progress_state(m_State);
+
 		m_StateEvent.set();
 	}
 
 	void set_value(unsigned long long const Completed, unsigned long long const Total)
 	{
-		if (m_State == TBPF_NORMAL && m_Completed == Completed && m_Total == Total)
+		const auto NewState = any_of(m_State, TBPF_NOPROGRESS, TBPF_INDETERMINATE)? TBPF_NORMAL : m_State.load();
+
+		if (m_State == NewState && m_Completed == Completed && m_Total == Total)
 			return;
 
-		m_State = TBPF_NORMAL;
+		m_State = NewState;
 		m_Completed = Completed;
 		m_Total = Total;
+
+		console.set_progress_value(m_State, ToPercent(m_Completed, m_Total));
 
 		m_ValueEvent.set();
 	}
@@ -147,7 +154,7 @@ private:
 		m_StateEvent{ os::event::type::automatic, os::event::state::nonsignaled },
 		m_ValueEvent{ os::event::type::automatic, os::event::state::nonsignaled };
 
-	os::thread m_ComThread{ IsWindows7OrGreater()? os::thread{ os::thread::mode::join, &taskbar_impl::handler, this } : os::thread{} };
+	os::thread m_ComThread{ IsWindows7OrGreater()? os::thread(&taskbar_impl::handler, this) : os::thread() };
 };
 
 void taskbar::set_state(TBPFLAG const State)
@@ -172,7 +179,7 @@ void taskbar::flash()
 
 	if (!GetWindowInfo(ConsoleWindow, &WindowInfo))
 	{
-		LOGWARNING(L"GetWindowInfo(ConsoleWindow): {}"sv, last_error());
+		LOGWARNING(L"GetWindowInfo(ConsoleWindow): {}"sv, os::last_error());
 		return;
 	}
 
@@ -180,10 +187,10 @@ void taskbar::flash()
 		return;
 
 	FLASHWINFO FlashInfo{sizeof(FlashInfo), ConsoleWindow, FLASHW_ALL | FLASHW_TIMERNOFG, 5, 0};
-	if (!FlashWindowEx(&FlashInfo))
-	{
-		LOGWARNING(L"FlashWindowEx(): {}"sv, last_error());
-	}
+	// https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-flashwindowex#return-value
+	// The return value specifies the window's state before the call to the FlashWindowEx function.
+	// We don't care.
+	FlashWindowEx(&FlashInfo);
 }
 
 

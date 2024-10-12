@@ -48,7 +48,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "keyboard.hpp"
 #include "flink.hpp"
 #include "pathmix.hpp"
-#include "strmix.hpp"
 #include "wakeful.hpp"
 #include "filepanels.hpp"
 #include "panel.hpp"
@@ -56,7 +55,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "mix.hpp"
 #include "string_utils.hpp"
 #include "cvtname.hpp"
-#include "copy_progress.hpp"
 #include "global.hpp"
 
 // Platform:
@@ -76,7 +74,7 @@ int GetDirInfo(string_view const DirName, DirInfoData& Data, multifilter* Filter
 	SCOPED_ACTION(wakeful);
 
 	ScanTree ScTree(false, true, (Flags & GETDIRINFO_SCANSYMLINKDEF? static_cast<DWORD>(-1) : (Flags & GETDIRINFO_SCANSYMLINK)));
-	SetCursorType(false, 0);
+	HideCursor();
 	/* $ 20.03.2002 DJ
 	   для . - покажем имя родительского каталога
 	*/
@@ -112,10 +110,13 @@ int GetDirInfo(string_view const DirName, DirInfoData& Data, multifilter* Filter
 	// Временные хранилища имён каталогов
 	string strLastDirName;
 	os::fs::find_data FindData;
+
+	// Mantis#0002692
+	Global->CtrlObject->Macro.SuspendMacros(true);
+	SCOPE_EXIT{ Global->CtrlObject->Macro.SuspendMacros(false); };
+
 	while (ScTree.GetNextName(FindData,strFullName))
 	{
-		// Mantis#0002692
-		if (!Global->CtrlObject->Macro.IsExecuting())
 		{
 			INPUT_RECORD rec;
 
@@ -216,8 +217,6 @@ int GetDirInfo(string_view const DirName, DirInfoData& Data, multifilter* Filter
 	return 1;
 }
 
-static int PluginSearchMsgOut;
-
 static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const PluginPanelItem *CurPanelItem, string_view const PluginSearchPath, BasicDirInfoData& Data)
 {
 	const auto MakeCopy = [](string_view const Str)
@@ -242,7 +241,7 @@ static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const
 	if (NewItem.CustomColumnNumber>0)
 	{
 		auto CustomColumnData = std::make_unique<wchar_t*[]>(NewItem.CustomColumnNumber);
-		for (const auto& [Column, ColData]: zip(span(CurPanelItem->CustomColumnData, NewItem.CustomColumnNumber), span(CustomColumnData.get(), NewItem.CustomColumnNumber)))
+		for (const auto& [Column, ColData]: zip(std::span(CurPanelItem->CustomColumnData, NewItem.CustomColumnNumber), std::span(CustomColumnData.get(), NewItem.CustomColumnNumber)))
 		{
 			if (Column)
 				ColData = MakeCopy(Column);
@@ -277,7 +276,7 @@ static void ScanPluginDir(plugin_panel* hDirListPlugin, OPERATION_MODES OpMode, 
 {
 	Callback(BaseDir, Data.DirCount + Data.FileCount, Data.FileSize);
 
-	span<PluginPanelItem> PanelData;
+	std::span<PluginPanelItem> PanelData;
 
 	if (CheckForEscAndConfirmAbort())
 	{
@@ -354,17 +353,20 @@ static bool GetPluginDirListImpl(Plugin* PluginNumber, HANDLE hPlugin, string_vi
 	}
 	else
 	{
-		if (const auto aHandle = Global->CtrlObject->Cp()->ActivePanel()->GetPluginHandle(); aHandle->panel() == hPlugin)
+		const auto aHandle = Global->CtrlObject->Cp()->ActivePanel()->GetPluginHandle();
+		if (aHandle && aHandle->panel() == hPlugin)
 			hDirListPlugin = aHandle;
-		else if (const auto pHandle = Global->CtrlObject->Cp()->PassivePanel()->GetPluginHandle(); pHandle->panel() == hPlugin)
-			hDirListPlugin = pHandle;
 		else
-			return false;
+		{
+			const auto pHandle = Global->CtrlObject->Cp()->PassivePanel()->GetPluginHandle();
+			if (pHandle && pHandle->panel() == hPlugin)
+				hDirListPlugin = pHandle;
+			else
+				return false;
+		}
 	}
 
-	const auto strDirName = fit_to_center(truncate_left(Dir, 30), 30);
-	SetCursorType(false, 0);
-	PluginSearchMsgOut=FALSE;
+	HideCursor();
 
 	OpenPanelInfo Info;
 	Global->CtrlObject->Plugins->GetOpenPanelInfo(hDirListPlugin,&Info);
@@ -383,7 +385,7 @@ static bool GetPluginDirListImpl(Plugin* PluginNumber, HANDLE hPlugin, string_vi
 
 	if (!equal_icase(strPrevDir, NullToEmpty(NewInfo.CurDir)))
 	{
-		span<PluginPanelItem> PanelData;
+		std::span<PluginPanelItem> PanelData;
 
 		if (Global->CtrlObject->Plugins->GetFindData(hDirListPlugin, PanelData, OpMode))
 		{

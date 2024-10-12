@@ -55,13 +55,14 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "log.hpp"
 #include "stddlg.hpp"
 #include "datetime.hpp"
+#include "exception.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
 #include "common/io.hpp"
-#include "common/range.hpp"
 #include "common/scope_exit.hpp"
 
 // External:
@@ -69,13 +70,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //----------------------------------------------------------------------------
 
-static void AddToPrintersMenu(VMenu2 *PrinterList, span<PRINTER_INFO_4W const> const Printers)
+static void AddToPrintersMenu(VMenu2 *PrinterList, std::span<PRINTER_INFO_4W const> const Printers)
 {
 	string strDefaultPrinter;
 	// BUGBUG check result
 	if (!os::GetDefaultPrinter(strDefaultPrinter))
 	{
-		LOGWARNING(L"GetDefaultPrinter(): {}"sv, last_error());
+		LOGWARNING(L"GetDefaultPrinter(): {}"sv, os::last_error());
 	}
 
 	bool bDefaultPrinterFound = false;
@@ -107,9 +108,9 @@ void PrintFiles(FileList* SrcPanel)
 			return;
 
 		const auto Enumerator = SrcPanel->enum_selected();
-		const auto DirsCount = std::accumulate(ALL_CONST_RANGE(Enumerator), size_t{}, [](size_t Count, const os::fs::find_data& i)
+		const auto DirsCount = std::ranges::fold_left(Enumerator, 0uz, [](size_t Count, const os::fs::find_data& i)
 		{
-			return Count + (i.Attributes & FILE_ATTRIBUTE_DIRECTORY? 1 : 0);
+			return Count + os::fs::is_directory(i);
 		});
 
 		if (DirsCount == SelCount)
@@ -123,7 +124,7 @@ void PrintFiles(FileList* SrcPanel)
 			PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
 			nullptr,
 			4,
-			edit_as<BYTE*>(pi.data()),
+			std::bit_cast<BYTE*>(pi.data()),
 			static_cast<DWORD>(pi.size()),
 			&Needed,
 			&PrintersCount
@@ -135,7 +136,7 @@ void PrintFiles(FileList* SrcPanel)
 				continue;
 			}
 
-			throw MAKE_FAR_EXCEPTION(msg(lng::MCannotEnumeratePrinters));
+			throw far_exception(msg(lng::MCannotEnumeratePrinters));
 		}
 
 		if (!PrintersCount)
@@ -151,11 +152,11 @@ void PrintFiles(FileList* SrcPanel)
 				if (!SrcPanel->get_first_selected(Data))
 					return;
 
-				strTitle = format(msg(lng::MPrintTo), quote_unconditional(truncate_left(Data.FileName, 50)));
+				strTitle = far::vformat(msg(lng::MPrintTo), quote_unconditional(truncate_left(Data.FileName, 50)));
 			}
 			else
 			{
-				strTitle = format(msg(lng::MPrintFilesTo), SelCount - DirsCount);
+				strTitle = far::vformat(msg(lng::MPrintFilesTo), SelCount - DirsCount);
 			}
 
 			const auto PrinterList = VMenu2::create(strTitle, {}, ScrY - 4);
@@ -172,14 +173,14 @@ void PrintFiles(FileList* SrcPanel)
 		os::printer_handle Printer;
 
 		if (!OpenPrinter(UNSAFE_CSTR(strPrinterName), &ptr_setter(Printer), nullptr))
-			throw MAKE_FAR_EXCEPTION(msg(lng::MCannotOpenPrinter));
+			throw far_exception(msg(lng::MCannotOpenPrinter));
 
 		SCOPED_ACTION(SaveScreen);
 
 		single_progress const Progress(msg(lng::MPrintTitle), {}, 0);
 		time_check const TimeCheck;
 
-		SetCursorType(false, 0);
+		HideCursor();
 
 		const auto hPlugin = SrcPanel->GetPluginHandle();
 
@@ -204,7 +205,7 @@ void PrintFiles(FileList* SrcPanel)
 				if (CheckForEscAndConfirmAbort())
 					break;
 
-				Progress.update(format(msg(lng::MPrintingFile), i.FileName));
+				Progress.update(far::vformat(msg(lng::MPrintingFile), i.FileName));
 				Progress.update(ToPercent(PrintIndex, SelCount - DirsCount));
 			}
 
@@ -218,11 +219,11 @@ void PrintFiles(FileList* SrcPanel)
 			{
 				const auto strTempDir = MakeTemp();
 				if (!os::fs::create_directory(strTempDir))
-					throw MAKE_FAR_EXCEPTION(L"create_directory error"sv);
+					throw far_exception(L"create_directory error"sv);
 
 				const auto ListItem = SrcPanel->GetLastSelectedItem();
 				if (!ListItem)
-					throw MAKE_FAR_EXCEPTION(L"GetLastSelectedItem error"sv);
+					throw far_exception(L"GetLastSelectedItem error"sv);
 
 				PluginPanelItemHolderHeap PanelItem;
 				SrcPanel->FileListToPluginItem(*ListItem, PanelItem);
@@ -232,10 +233,10 @@ void PrintFiles(FileList* SrcPanel)
 					// BUGBUG check result
 					if (!os::fs::remove_directory(strTempDir))
 					{
-						LOGWARNING(L"remove_directory({}): {}"sv, strTempDir, last_error());
+						LOGWARNING(L"remove_directory({}): {}"sv, strTempDir, os::last_error());
 					}
 
-					throw MAKE_FAR_EXCEPTION(L"GetFile error"sv);
+					throw far_exception(L"GetFile error"sv);
 				}
 
 				Deleter.add(FileName);
@@ -247,9 +248,9 @@ void PrintFiles(FileList* SrcPanel)
 
 			try
 			{
-				const os::fs::file SrcFile(FileName, GENERIC_READ, os::fs::file_share_all, nullptr, OPEN_EXISTING);
+				const os::fs::file SrcFile(FileName, FILE_READ_DATA, os::fs::file_share_all, nullptr, OPEN_EXISTING);
 				if (!SrcFile)
-					throw MAKE_FAR_EXCEPTION(L"Cannot open the file"sv);
+					throw far_exception(L"Cannot open the file"sv);
 
 				os::fs::filebuf StreamBuffer(SrcFile, std::ios::in);
 				std::istream Stream(&StreamBuffer);
@@ -257,8 +258,8 @@ void PrintFiles(FileList* SrcPanel)
 
 				DOC_INFO_1 di1{ UNSAFE_CSTR(FileName) };
 
-				if (!StartDocPrinter(Printer.native_handle(), 1, edit_as<BYTE*>(&di1)))
-					throw MAKE_FAR_EXCEPTION(L"StartDocPrinter error"sv);
+				if (!StartDocPrinter(Printer.native_handle(), 1, std::bit_cast<BYTE*>(&di1)))
+					throw far_exception(L"StartDocPrinter error"sv);
 
 				SCOPE_EXIT{ EndDocPrinter(Printer.native_handle()); };
 
@@ -271,12 +272,12 @@ void PrintFiles(FileList* SrcPanel)
 
 					DWORD Written;
 					if (!WritePrinter(Printer.native_handle(), Buffer, static_cast<DWORD>(Read), &Written))
-						throw MAKE_FAR_EXCEPTION(L"WritePrinter error"sv);
+						throw far_exception(L"WritePrinter error"sv);
 				}
 
 				SrcPanel->ClearLastGetSelection();
 			}
-			catch (const far_exception& e)
+			catch (far_exception const& e)
 			{
 				if (Message(MSG_WARNING, e,
 					msg(lng::MPrintTitle),
@@ -289,7 +290,7 @@ void PrintFiles(FileList* SrcPanel)
 			}
 		}
 	}
-	catch (const far_exception& e)
+	catch (far_exception const& e)
 	{
 		Message(MSG_WARNING, e,
 			msg(lng::MPrintTitle),

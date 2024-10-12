@@ -44,6 +44,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -80,7 +81,7 @@ void EjectVolume(string_view const Path)
 	}
 	else
 	{
-		throw MAKE_FAR_EXCEPTION(L"Unknown drive type"sv);
+		throw far_exception(L"Unknown drive type"sv);
 	}
 
 	os::fs::file File;
@@ -93,20 +94,20 @@ void EjectVolume(string_view const Path)
 		if (WriteFlag && GetLastError() == ERROR_ACCESS_DENIED && File.Open(Name, GENERIC_READ, Args...))
 			return false;
 
-		throw MAKE_FAR_EXCEPTION(L"Cannot open the disk"sv);
+		throw far_exception(L"Cannot open the disk"sv);
 	};
 
 	if (!OpenForWrite(DeviceName, os::fs::file_share_all, nullptr, OPEN_EXISTING))
 		ReadOnly = true;
 
 	if (!File.IoControl(FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0))
-		throw MAKE_FAR_EXCEPTION(L"FSCTL_LOCK_VOLUME"sv);
+		throw far_exception(L"FSCTL_LOCK_VOLUME"sv);
 
 	SCOPE_EXIT
 	{
 		if (!File.IoControl(FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0))
 		{
-			LOGWARNING(L"IoControl(FSCTL_UNLOCK_VOLUME, {}): {}"sv, File.GetName(), last_error());
+			LOGERROR(L"IoControl(FSCTL_UNLOCK_VOLUME, {}): {}"sv, File.GetName(), os::last_error());
 		}
 	};
 
@@ -114,7 +115,7 @@ void EjectVolume(string_view const Path)
 	{
 		if (!File.FlushBuffers())
 		{
-			LOGWARNING(L"FlushBuffers({}): {}"sv, File.GetName(), last_error());
+			LOGWARNING(L"FlushBuffers({}): {}"sv, File.GetName(), os::last_error());
 		}
 	}
 
@@ -126,25 +127,25 @@ void EjectVolume(string_view const Path)
 		  дисмоунтить только 1 карточку, а не отключать все устройство!
 		*/
 		if (File.IoControl(FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0))
-			throw MAKE_FAR_EXCEPTION(L"DismountVolume"sv);
+			throw far_exception(L"DismountVolume"sv);
 	}
 
 	PREVENT_MEDIA_REMOVAL PreventMediaRemoval{};
 	if (!File.IoControl(IOCTL_STORAGE_MEDIA_REMOVAL, &PreventMediaRemoval, sizeof(PreventMediaRemoval), nullptr, 0))
-		throw MAKE_FAR_EXCEPTION(L"IOCTL_STORAGE_MEDIA_REMOVAL"sv);
+		throw far_exception(L"IOCTL_STORAGE_MEDIA_REMOVAL"sv);
 
 	if (!File.IoControl(IOCTL_STORAGE_EJECT_MEDIA, nullptr, 0, nullptr, 0))
-		throw MAKE_FAR_EXCEPTION(L"IOCTL_STORAGE_EJECT_MEDIA"sv);
+		throw far_exception(L"IOCTL_STORAGE_EJECT_MEDIA"sv);
 }
 
 void LoadVolume(string_view const Path)
 {
 	const os::fs::file File(extract_root_device(Path), GENERIC_READ, os::fs::file_share_all, nullptr, OPEN_EXISTING);
 	if (!File)
-		throw MAKE_FAR_EXCEPTION(L"Cannot open the disk"sv);
+		throw far_exception(L"Cannot open the disk"sv);
 
 	if (!File.IoControl(IOCTL_STORAGE_LOAD_MEDIA, nullptr, 0, nullptr, 0))
-		throw MAKE_FAR_EXCEPTION(L"IOCTL_STORAGE_LOAD_MEDIA"sv);
+		throw far_exception(L"IOCTL_STORAGE_LOAD_MEDIA"sv);
 }
 
 bool IsEjectableMedia(string_view const Path)

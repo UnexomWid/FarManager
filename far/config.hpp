@@ -185,8 +185,7 @@ protected:
 	COPY_CONSTRUCTIBLE(Option);
 	COPY_ASSIGNABLE_DEFAULT(Option);
 
-	template<class T>
-	explicit Option(const T& Value): m_Value(Value) {}
+	explicit Option(const auto& Value): m_Value(Value) {}
 
 	template<class T>
 	[[nodiscard]]
@@ -211,8 +210,7 @@ namespace option
 	class validator_tag{};
 	class notifier_tag{};
 
-	template<typename callable>
-	auto validator(callable&& Callable)
+	auto validator(auto&& Callable)
 	{
 		return overload
 		{
@@ -221,8 +219,7 @@ namespace option
 		};
 	}
 
-	template<typename callable>
-	auto notifier(callable&& Callable)
+	auto notifier(auto&& Callable)
 	{
 		return overload
 		{
@@ -296,7 +293,7 @@ namespace detail
 		OptionImpl():
 			Option(base_type())
 		{
-			static_assert(std::is_base_of_v<OptionImpl, derived>);
+			static_assert(std::derived_from<derived, OptionImpl>);
 		}
 
 		auto& operator=(const base_type& Value)
@@ -341,7 +338,7 @@ public:
 	void Export(FarSettingsItem& To) const override;
 
 	[[nodiscard]]
-	operator bool() const { return Get(); }
+	explicit(false) operator bool() const { return Get(); }
 };
 
 class Bool3Option final: public detail::OptionImpl<long long, Bool3Option>
@@ -361,7 +358,7 @@ public:
 	void Export(FarSettingsItem& To) const override;
 
 	[[nodiscard]]
-	operator FARCHECKEDSTATE() const { return static_cast<FARCHECKEDSTATE>(Get()); }
+	explicit(false) operator FARCHECKEDSTATE() const { return static_cast<FARCHECKEDSTATE>(Get()); }
 };
 
 class IntOption final: public detail::OptionImpl<long long, IntOption>
@@ -390,7 +387,7 @@ public:
 	IntOption& operator++(){Set(Get()+1); return *this;}
 
 	[[nodiscard]]
-	operator long long() const { return Get(); }
+	explicit(false) operator long long() const { return Get(); }
 };
 
 class StringOption final: public detail::OptionImpl<string, StringOption>
@@ -421,9 +418,9 @@ public:
 	size_t size() const { return Get().size(); }
 
 	[[nodiscard]]
-	operator const string&() const { return Get(); }
+	explicit(false) operator const string&() const { return Get(); }
 	[[nodiscard]]
-	operator string_view() const { return Get(); }
+	explicit(false) operator string_view() const { return Get(); }
 };
 
 class Options: noncopyable
@@ -450,6 +447,8 @@ public:
 	void LocalViewerConfig(ViewerOptions &ViOptRef) {return ViewerConfig(ViOptRef, true);}
 	void LocalEditorConfig(EditorOptions &EdOptRef) {return EditorConfig(EdOptRef, true);}
 	void SetSearchColumns(string_view Columns, string_view Widths);
+	void SetFilePanelModes();
+	static void MaskGroupsSettings();
 
 	struct SortingOptions
 	{
@@ -572,7 +571,6 @@ public:
 		BoolOption EditOpenedForWrite;
 		BoolOption SearchSelFound;
 		BoolOption SearchCursorAtEnd;
-		BoolOption SearchRegexp;
 		Bool3Option ShowWhiteSpace;
 
 		StringOption strWordDiv;
@@ -604,8 +602,6 @@ public:
 		BoolOption SaveShortPos;
 		BoolOption SaveViewMode;
 		BoolOption SaveWrapMode;
-		BoolOption SearchEditFocus; // auto-focus on edit text/hex window
-		BoolOption SearchRegexp;
 		Bool3Option SearchWrapStop; // [NonStop] / {Start-End} / [Full Cycle]
 		BoolOption ShowArrows;
 		BoolOption ShowKeyBar;
@@ -792,6 +788,7 @@ public:
 		BoolOption RestoreCPAfterExecute;
 		StringOption strExecuteBatchType;
 		StringOption strExcludeCmds;
+		std::vector<string_view> ExcludeCmds;
 		StringOption Comspec;
 		StringOption ComspecArguments;
 		struct
@@ -809,6 +806,8 @@ public:
 	SortingOptions Sort;
 
 	palette Palette;
+	BoolOption SetPalette;
+
 	BoolOption Clock;
 	BoolOption Greeting;
 	BoolOption Mouse;
@@ -933,6 +932,7 @@ public:
 
 	BoolOption ExceptUsed;
 	IntOption CursorSize[4];
+	IntOption GrabberCursorSize;
 
 	CodeXLAT XLat;
 
@@ -940,10 +940,8 @@ public:
 
 	StringOption strHelpLanguage;
 	BoolOption FullScreenHelp;
-	IntOption HelpTabSize;
 
 	IntOption HelpURLRules; // =0 отключить возможность запуска URL-приложений
-	BoolOption HelpSearchRegexp;
 
 	// запоминать логические диски и не опрашивать каждый раз. Для предотвращения "просыпания" "зеленых" винтов.
 	BoolOption RememberLogicalDrives;
@@ -956,6 +954,9 @@ public:
 	IntOption MsHWheelDelta;
 	IntOption MsHWheelDeltaView;
 	IntOption MsHWheelDeltaEdit;
+
+	// How many ticks constitute an event
+	IntOption MsWheelThreshold;
 
 	/*
 	битовая маска:
@@ -1040,6 +1041,8 @@ public:
 	BoolOption WindowModeStickyX;
 	BoolOption WindowModeStickyY;
 
+	BoolOption ClipboardUnicodeWorkaround;
+
 	std::vector<std::vector<std::pair<panel_sort, sort_order>>> PanelSortLayers;
 
 	const std::vector<PanelViewSettings>& ViewSettings;
@@ -1051,7 +1054,7 @@ private:
 	void InitConfigsData();
 	farconfig& GetConfig(config_type Type);
 	const farconfig& GetConfig(config_type Type) const;
-	static intptr_t AdvancedConfigDlgProc(class Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
+	intptr_t AdvancedConfigDlgProc(class Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
 	void SystemSettings();
 	void PanelSettings();
 	void InterfaceSettings();
@@ -1065,10 +1068,8 @@ private:
 	void EditorConfig(EditorOptions &EdOptRef, bool Local = false);
 	void SetFolderInfoFiles();
 	void InfoPanelSettings();
-	static void MaskGroupsSettings();
 	void AutoCompleteSettings();
 	void TreeSettings();
-	void SetFilePanelModes();
 	void SetViewSettings(size_t Index, PanelViewSettings&& Data);
 	void AddViewSettings(size_t Index, PanelViewSettings&& Data);
 	void DeleteViewSettings(size_t Index);
@@ -1081,6 +1082,7 @@ private:
 	std::vector<farconfig> m_Configs;
 	std::vector<PanelViewSettings> m_ViewSettings;
 	bool m_ViewSettingsChanged{};
+	bool m_HideUnchanged{};
 };
 
 string GetFarIniString(string_view AppName, string_view KeyName, string_view Default);

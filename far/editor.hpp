@@ -37,6 +37,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Internal:
 #include "scrobj.hpp"
+#include "stddlg.hpp"
 #include "poscache.hpp"
 #include "bitflags.hpp"
 #include "config.hpp"
@@ -46,7 +47,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Platform:
 
 // Common:
-#include "common/rel_ops.hpp"
 
 // External:
 
@@ -55,11 +55,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 class FileEditor;
 class KeyBar;
 class Edit;
+struct ColorItem;
 
 class Editor final: public SimpleScreenObject
 {
 public:
-	explicit Editor(window_ptr Owner, uintptr_t Codepage, bool DialogUsed = false);
+	explicit Editor(window_ptr Owner, bool DialogUsed = false);
 	~Editor() override;
 
 	bool ProcessKey(const Manager::Key& Key) override;
@@ -68,13 +69,11 @@ public:
 
 	void SetCacheParams(EditorPosCache &pc, bool count_bom = false);
 	void GetCacheParams(EditorPosCache &pc) const;
-	bool TryCodePage(uintptr_t Codepage, uintptr_t& ErrorCodepage, size_t& ErrorLine, size_t& ErrorPos, wchar_t& ErrorChar);
-	bool SetCodePage(uintptr_t codepage, bool *BOM=nullptr, bool ShowMe=true); //BUGBUG
-	uintptr_t GetCodePage() const; //BUGBUG
+	bool TryCodePage(uintptr_t CurrentCodepage, uintptr_t NewCodepage, uintptr_t& ErrorCodepage, size_t& ErrorLine, size_t& ErrorPos, wchar_t& ErrorChar); //BUGBUG does not belong here
+	bool SetCodePage(uintptr_t CurrentCodepage, uintptr_t NewCodepage, bool *BOM=nullptr, bool ShowMe=true); //BUGBUG does not belong here
 	void KeepInitParameters() const;
 	void SetStartPos(int LineNum, int CharNum);
 	bool IsModified() const;
-	bool IsChanged() const;
 	long long GetCurPos(bool file_pos = false, bool add_bom = false) const;
 	int EditorControl(int Command, intptr_t Param1, void *Param2);
 	void SetOptions(const Options::EditorOptions& Options);
@@ -106,8 +105,6 @@ public:
 	bool GetAllowEmptySpaceAfterEof() const { return EdOpt.AllowEmptySpaceAfterEof; }
 	void SetSearchSelFound(bool NewMode) { EdOpt.SearchSelFound = NewMode; }
 	bool GetSearchSelFound() const { return EdOpt.SearchSelFound; }
-	void SetSearchRegexp(bool NewMode) { EdOpt.SearchRegexp = NewMode; }
-	bool GetSearchRegexp() const { return EdOpt.SearchRegexp; }
 	void SetShowWhiteSpace(int NewMode);
 	void GetSavePosMode(int &SavePos, int &SaveShortPos) const;
 	// передавайте в качестве значения параметра "-1" для параметра,
@@ -142,12 +139,12 @@ public:
 	void AutoDeleteColors();
 	int GetId() const { return EditorID; }
 
-	static void SetReplaceMode(bool Mode);
 	static eol GetDefaultEOL();
 
 	struct EditorUndoData;
 
 private:
+	friend class Edit;
 	friend class DlgEdit;
 	friend class FileEditor;
 	friend class undo_block;
@@ -162,9 +159,7 @@ private:
 	struct InternalEditorBookmark;
 
 	template<class T, class ConstT = T>
-	class numbered_iterator_t:
-		public T,
-		public rel_ops<numbered_iterator_t<T, ConstT>>
+	class numbered_iterator_t: public T
 	{
 	public:
 		COPYABLE(numbered_iterator_t);
@@ -187,12 +182,10 @@ private:
 		numbered_iterator_t& operator--() { --base(); --m_Number; return *this; }
 
 		T& base() { return *this; }
-		const std::conditional_t<std::is_base_of_v<ConstT, T>, ConstT, T>& base() const { return *this; }
-		std::conditional_t<std::is_base_of_v<ConstT, T>, const ConstT&, ConstT> cbase() const { return *this; }
+		std::conditional_t<std::derived_from<T, ConstT>, ConstT, T> const& base() const { return *this; }
+		std::conditional_t<std::derived_from<T, ConstT>, const ConstT&, ConstT> cbase() const { return *this; }
 
-		// Intentionally not implemented, use prefix forms.
-		numbered_iterator_t operator++(int) = delete;
-		numbered_iterator_t operator--(int) = delete;
+		POSTFIX_OPS()
 
 	private:
 		size_t m_Number;
@@ -211,7 +204,6 @@ private:
 	void Down();
 	void ScrollDown();
 	void ScrollUp();
-	bool Search(bool Next);
 	void GoToLine(size_t Line);
 	void GoToLineAndShow(size_t Line);
 	void GoToPosition();
@@ -283,15 +275,20 @@ private:
 	string Block2Text();
 	string VBlock2Text();
 	void Change(EDITOR_CHANGETYPE Type,int StrNum);
-	bool SetLineCodePage(iterator const& Iterator, uintptr_t Codepage, bool Validate);
+	bool SetLineCodePage(Edit& Line, uintptr_t CurrentCodepage, uintptr_t NewCodepage, bool Validate);
 	numbered_iterator InsertString(string_view Str, const numbered_iterator& Where);
 	numbered_iterator PushString(const string_view Str) { return InsertString(Str, EndIterator()); }
 	void TurnOffMarkingBlock();
 	void SwapState(Editor& swap_state);
 	bool ProcessKeyInternal(const Manager::Key& Key, bool& Refresh);
 
-	template<class F>
-	void UpdateIteratorAndKeepPos(numbered_iterator& Iter, const F& Func);
+	enum class SearchReplaceDisposition;
+	SearchReplaceDisposition ShowSearchReplaceDialog(bool ReplaceMode);
+	void DoSearchReplace(SearchReplaceDisposition Disposition);
+	int CalculateSearchStartPosition(bool Continue, bool Backward, bool Regex) const;
+	int CalculateSearchNextPositionInTheLine(bool Backward, bool Regex) const;
+
+	void UpdateIteratorAndKeepPos(numbered_iterator& Iter, const auto& Func);
 
 	numbered_iterator EndIterator();
 	numbered_const_iterator EndIterator() const;
@@ -315,13 +312,20 @@ private:
 	void BeginStreamMarking(const numbered_iterator& Where);
 	void BeginVBlockMarking(const numbered_iterator& Where);
 
+	uintptr_t GetCodePage() const;
+
+	void AddColor(numbered_iterator const& It, ColorItem const& Item);
+	using delete_color_condition = function_ref<bool(ColorItem const&)>;
+	void DeleteColor(Edit const* It, delete_color_condition Condition);
+	void DeleteColor(numbered_iterator const& It, delete_color_condition Condition);
+	bool GetColor(numbered_iterator const& It, ColorItem& Item, size_t Index) const;
+	std::multiset<ColorItem> const* GetColors(Edit* It) const;
 	// Младший байт (маска 0xFF) юзается классом ScreenObject!!!
 	enum editor_flags
 	{
 		FEDITOR_MODIFIED              = 8_bit,
 		FEDITOR_MARKINGBLOCK          = 9_bit,
 		FEDITOR_MARKINGVBLOCK         = 10_bit,
-		FEDITOR_WASCHANGED            = 11_bit,
 		FEDITOR_OVERTYPE              = 12_bit,
 		FEDITOR_NEWUNDO               = 13_bit,
 		FEDITOR_UNDOSAVEPOSLOST       = 14_bit,
@@ -351,7 +355,7 @@ private:
 	int VBlockSizeX{};
 	int VBlockSizeY{};
 	int MacroSelectionStart{ -1 };
-	uintptr_t m_codepage; //BUGBUG
+	uintptr_t m_codepageBUGBUG;
 	int m_StartLine{ -1 };
 	int StartChar{ -1 };
 	//numbered bookmarks (accessible by Ctrl-0..9)
@@ -362,8 +366,9 @@ private:
 	bool NewSessionPos{};
 	std::vector<char> decoded;
 	numbered_iterator m_FoundLine{ EndIterator() };
-	int m_FoundPos{};
-	int m_FoundSize{};
+	int m_FoundPos{ -1 };
+	int m_FoundSize{ -1 };
+	std::unordered_map<Edit const*, std::multiset<ColorItem>> m_ColorList;
 	std::unordered_set<Edit*> m_AutoDeletedColors;
 	struct
 	{
@@ -383,9 +388,10 @@ private:
 	Options::EditorOptions EdOpt;
 	int Pasting{};
 	int XX2{}; //scrollbar
-	string strLastSearchStr;
-	search_case_fold LastSearchCaseFold;
-	bool LastSearchWholeWords{}, LastSearchReverse{}, LastSearchRegexp{}, LastSearchPreserveStyle{};
+
+	SearchReplaceDlgParams m_SearchDlgParams;
+	bool IsReplaceMode{};
+	bool IsReplaceAll{};
 
 	int EditorID{};
 	int EditorControlLock{};

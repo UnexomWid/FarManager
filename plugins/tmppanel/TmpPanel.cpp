@@ -48,9 +48,6 @@ static std::vector<string> ReadFileLines(const HANDLE FileMapping, const DWORD F
 
 	string Line;
 
-#define CP_UNICODE    ((uintptr_t)1200)
-#define CP_REVERSEBOM ((uintptr_t)1201)
-
 	const auto Ptr = reinterpret_cast<wchar_t*>(FileData);
 
 	auto cp = CP_OEMCP;
@@ -392,7 +389,7 @@ HANDLE WINAPI OpenW(const OpenInfo* Info)
 
 		if (!CommandLine.empty())
 		{
-			if (starts_with(CommandLine, L'<'))
+			if (CommandLine.starts_with(L'<'))
 			{
 				CommandLine.remove_prefix(1);
 				auto Plugin = OpenPanelFromOutput(string(CommandLine));

@@ -52,8 +52,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "file_io.hpp"
 #include "log.hpp"
 #include "stddlg.hpp"
+#include "encoding.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -81,7 +83,7 @@ void DizList::Read(string_view const Path, const string* DizName)
 
 	const auto ReadDizFile = [this](const string_view Name)
 	{
-		const os::fs::file DizFile(Name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING);
+		const os::fs::file DizFile(Name, FILE_READ_DATA, os::fs::file_share_read, nullptr, OPEN_EXISTING);
 		if (!DizFile)
 			return false;
 
@@ -102,7 +104,7 @@ void DizList::Read(string_view const Path, const string* DizName)
 
 			if (TimeCheck)
 			{
-				SetCursorType(false, 0);
+				HideCursor();
 
 				if (CheckForEscAndConfirmAbort())
 					break;
@@ -136,7 +138,7 @@ void DizList::Read(string_view const Path, const string* DizName)
 				}
 
 				// Insert unconditionally
-				LastAdded = Insert({ &*NameBegin, static_cast<size_t>(NameEnd - NameBegin) });
+				LastAdded = Insert({ std::to_address(NameBegin), static_cast<size_t>(NameEnd - NameBegin) });
 				LastAdded->second.emplace_back(DescBegin, DizText.cend());
 			}
 			else if (LastAdded != m_DizData.end())
@@ -158,13 +160,13 @@ void DizList::Read(string_view const Path, const string* DizName)
 		{
 			return ReadDizFile(Name);
 		}
-		catch(std::exception const& e)
+		catch (std::exception const& e)
 		{
 			m_DizData.clear();
 			m_DizFileName.clear();
 			m_Modified = false;
 
-			LOGWARNING(L"{}"sv, e);
+			LOGERROR(L"{}"sv, e);
 
 			return false;
 		}
@@ -178,6 +180,9 @@ void DizList::Read(string_view const Path, const string* DizName)
 	{
 		for (const auto& i: enum_tokens_with_quotes(Global->Opt->Diz.strListNames.Get(), L",;"sv))
 		{
+			if (i.empty())
+				continue;
+
 			if (try_read_diz_file(path::join(Path, i)))
 				break;
 		}
@@ -199,7 +204,7 @@ string_view DizList::Get(const string_view Name, const string_view ShortName, co
 		return {};
 	}
 
-	auto Begin = std::find_if_not(ALL_CONST_RANGE(Description), std::iswblank);
+	auto Begin = std::ranges::find_if_not(Description, std::iswblank);
 
 	if (std::iswdigit(*Begin))
 	{
@@ -233,13 +238,13 @@ string_view DizList::Get(const string_view Name, const string_view ShortName, co
 
 DizList::desc_map::iterator DizList::Find(const string_view Name, const string_view ShortName)
 {
-	auto Iterator = m_DizData.find(string_comparer::generic_key{ Name });
+	auto Iterator = m_DizData.find(Name);
 
 	if (Iterator == m_DizData.end())
-		Iterator = m_DizData.find(string_comparer::generic_key{ ShortName });
+		Iterator = m_DizData.find(ShortName);
 
 	//если файл описаний был в OEM/ANSI то имена файлов могут не совпадать с юникодными
-	if (Iterator == m_DizData.end() && m_CodePage && !IsUnicodeOrUtfCodePage(*m_CodePage))
+	if (Iterator == m_DizData.end() && m_CodePage && !IsUtfCodePage(*m_CodePage))
 	{
 		const auto strRecoded = encoding::get_chars(*m_CodePage, encoding::get_bytes(*m_CodePage, Name));
 		if (strRecoded == Name)
@@ -260,7 +265,7 @@ DizList::desc_map::const_iterator DizList::Find(const string_view Name, const st
 DizList::desc_map::iterator DizList::Insert(string_view const Name)
 {
 	auto Iterator = m_DizData.emplace(Name, description_data{});
-	m_OrderForWrite.push_back(&*Iterator);
+	m_OrderForWrite.push_back(std::to_address(Iterator));
 	return Iterator;
 }
 
@@ -272,7 +277,7 @@ bool DizList::Erase(const string_view Name, const string_view ShortName)
 		return false;
 	}
 
-	m_OrderForWrite.erase(std::find(ALL_RANGE(m_OrderForWrite), &*Iterator));
+	m_OrderForWrite.erase(std::ranges::find(m_OrderForWrite, std::to_address(Iterator)));
 
 	// Sometimes client can keep the pointer after erasure and use it,
 	// e. g. if a description has been deleted during file moving and filelist decided to redraw in the process.
@@ -301,7 +306,11 @@ bool DizList::Flush(string_view const Path, const string* DizName)
 			return false;
 
 		const auto Enum = enum_tokens_with_quotes(Global->Opt->Diz.strListNames.Get(), L",;"sv);
-		const auto Begin = Enum.begin();
+		auto Begin = Enum.begin();
+
+		while (Begin != Enum.end() && Begin->empty())
+			++Begin;
+
 		if (Begin != Enum.end())
 			m_DizFileName = path::join(Path, *Begin);
 
@@ -326,7 +335,7 @@ bool DizList::Flush(string_view const Path, const string* DizName)
 
 		if (!os::fs::set_file_attributes(m_DizFileName, FileAttr & ~FILE_ATTRIBUTE_READONLY)) //BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, m_DizFileName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, m_DizFileName, os::last_error());
 		}
 	}
 
@@ -335,7 +344,7 @@ bool DizList::Flush(string_view const Path, const string* DizName)
 		if (m_OrderForWrite.empty())
 		{
 			if (!os::fs::delete_file(m_DizFileName))
-				throw MAKE_FAR_EXCEPTION(L"Can't delete the file"sv);
+				throw far_exception(L"Can't delete the file"sv);
 
 			return true;
 		}
@@ -371,7 +380,7 @@ bool DizList::Flush(string_view const Path, const string* DizName)
 			Stream << StrStream.rdbuf();
 		});
 	}
-	catch (const far_exception& e)
+	catch (far_exception const& e)
 	{
 		Message(MSG_WARNING, e,
 			msg(lng::MError),

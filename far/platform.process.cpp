@@ -36,7 +36,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.process.hpp"
 
 // Internal:
-#include "exception.hpp"
 #include "imports.hpp"
 #include "log.hpp"
 
@@ -113,10 +112,10 @@ namespace os::process
 	{
 #ifndef _WIN64
 		if constexpr (wow)
-			return imports.NtWow64QueryInformationProcess64 && imports.NtWow64QueryInformationProcess64(Process, ProcessInformationClass, ProcessInformation, ProcessInformationLength, ReturnLength) == STATUS_SUCCESS;
+			return imports.NtWow64QueryInformationProcess64 && NT_SUCCESS(imports.NtWow64QueryInformationProcess64(Process, ProcessInformationClass, ProcessInformation, ProcessInformationLength, ReturnLength));
 		else
 #endif
-			return imports.NtQueryInformationProcess && imports.NtQueryInformationProcess(Process, ProcessInformationClass, ProcessInformation, ProcessInformationLength, ReturnLength) == STATUS_SUCCESS;
+			return imports.NtQueryInformationProcess && NT_SUCCESS(imports.NtQueryInformationProcess(Process, ProcessInformationClass, ProcessInformation, ProcessInformationLength, ReturnLength));
 	}
 
 	template<bool wow>
@@ -124,10 +123,10 @@ namespace os::process
 	{
 #ifndef _WIN64
 		if constexpr (wow)
-			return imports.NtWow64ReadVirtualMemory64 && imports.NtWow64ReadVirtualMemory64(Process, BaseAddress, Buffer, Size, NumberOfBytesRead) == STATUS_SUCCESS;
+			return imports.NtWow64ReadVirtualMemory64 && NT_SUCCESS(imports.NtWow64ReadVirtualMemory64(Process, BaseAddress, Buffer, Size, NumberOfBytesRead));
 		else
 #endif
-			return ReadProcessMemory(Process, reinterpret_cast<void*>(BaseAddress), Buffer, Size, NumberOfBytesRead) != FALSE;
+			return ReadProcessMemory(Process, std::bit_cast<void*>(BaseAddress), Buffer, Size, NumberOfBytesRead) != FALSE;
 	}
 
 	static auto subsystem_to_type(int const Subsystem)
@@ -221,7 +220,7 @@ namespace os::process
 		if (!fs::get_module_file_name(Process, {}, ProcessFileName))
 			return image_type::unknown;
 
-		const fs::file ModuleFile(ProcessFileName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING);
+		const fs::file ModuleFile(ProcessFileName, GENERIC_READ, os::fs::file_share_read, nullptr, OPEN_EXISTING);
 		if (!ModuleFile)
 			return image_type::unknown;
 
@@ -232,10 +231,28 @@ namespace os::process
 			Stream.exceptions(Stream.badbit | Stream.failbit);
 			return get_process_subsystem_from_module_impl(Stream);
 		}
-		catch (const std::exception&)
+		catch (std::exception const&)
 		{
 			return image_type::unknown;
 		}
+	}
+
+	static auto get_process_subsystem_from_handle(HANDLE const Process)
+	{
+#ifdef _M_IX86
+		if (IsWow64Process())
+			return image_type::unknown;
+
+		const auto HandleValue = std::bit_cast<uintptr_t>(Process);
+
+		if (HandleValue & 0b01)
+			return image_type::console; // VDM
+
+		if (HandleValue & 0b10)
+			return image_type::graphical; // WOW32
+#endif
+
+		return image_type::unknown;
 	}
 
 	image_type get_process_subsystem(HANDLE const Process)
@@ -244,6 +261,9 @@ namespace os::process
 			return Type;
 
 		if (const auto Type = get_process_subsystem_from_module(Process); Type != image_type::unknown)
+			return Type;
+
+		if (const auto Type = get_process_subsystem_from_handle(Process); Type != image_type::unknown)
 			return Type;
 
 		return image_type::unknown;
@@ -357,12 +377,15 @@ namespace os::process
 	{
 		const fs::file File(Filename, FILE_READ_ATTRIBUTES, fs::file_share_all, nullptr, OPEN_EXISTING);
 		if (!File)
+		{
+			LOGWARNING(L"CreateFile({}): {}"sv, Filename, os::last_error());
 			return 0;
+		}
 
 		const auto ReasonableSize = 1024;
 		block_ptr<FILE_PROCESS_IDS_USING_FILE_INFORMATION, ReasonableSize> Info(ReasonableSize);
 
-		NTSTATUS Result = STATUS_SEVERITY_ERROR;
+		auto Result = STATUS_UNSUCCESSFUL;
 
 		while (
 			!File.NtQueryInformationFile(Info.data(), Info.size(), FileProcessIdsUsingFileInformation, &Result) &&
@@ -372,10 +395,13 @@ namespace os::process
 			Info.reset(Info.size() * 2);
 		}
 
-		if (Result != STATUS_SUCCESS)
+		if (!NT_SUCCESS(Result))
+		{
+			LOGWARNING(L"NtQueryInformationFile({}): {}"sv, Filename, format_ntstatus(Result));
 			return 0;
+		}
 
-		for (const auto& i: span(Info->ProcessIdList, Info->NumberOfProcessIdsInList))
+		for (const auto& i: std::span(Info->ProcessIdList, Info->NumberOfProcessIdsInList))
 		{
 			const auto Name = get_process_name(i);
 			version::file_version Version;
@@ -400,12 +426,12 @@ namespace os::process
 		{
 			ULONG ReturnSize{};
 			const auto Result = imports.NtQuerySystemInformation(SystemProcessInformation, m_Info.data(), static_cast<ULONG>(m_Info.size()), &ReturnSize);
-			if (Result == STATUS_SUCCESS)
+			if (NT_SUCCESS(Result))
 				break;
 
 			if (any_of(Result, STATUS_INFO_LENGTH_MISMATCH, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL))
 			{
-				m_Info.reset(ReturnSize? ReturnSize : grow_exp_noshrink(m_Info.size(), {}));
+				m_Info.reset(ReturnSize? ReturnSize : grow_exp(m_Info.size(), {}));
 				continue;
 			}
 
@@ -418,22 +444,53 @@ namespace os::process
 
 	bool enum_processes::get(bool Reset, enum_process_entry& Value) const
 	{
+		constexpr auto InvalidOffset = static_cast<size_t>(-1);
+
 		if (m_Info.empty())
 			return false;
 
 		if (Reset)
 			m_Offset = 0;
+		else if (m_Offset == InvalidOffset)
+			return false;
 
 		const auto& Info = view_as<SYSTEM_PROCESS_INFORMATION>(m_Info.data(), m_Offset);
 
-		if (!Info.NextEntryOffset)
-			return false;
-
-		Value.Pid = static_cast<DWORD>(reinterpret_cast<uintptr_t>(Info.UniqueProcessId));
+		Value.Pid = static_cast<DWORD>(std::bit_cast<uintptr_t>(Info.UniqueProcessId));
 		Value.Name = { Info.ImageName.Buffer, Info.ImageName.Length / sizeof(wchar_t) };
 		Value.Threads = { view_as<SYSTEM_THREAD_INFORMATION const*>(&Info, sizeof(Info)), Info.NumberOfThreads };
-		m_Offset += Info.NextEntryOffset;
+
+		if (Info.NextEntryOffset)
+			m_Offset += Info.NextEntryOffset;
+		else
+			m_Offset = InvalidOffset;
 
 		return true;
+	}
+
+	bool terminate_other(int const Pid)
+	{
+		handle const Process(OpenProcess(PROCESS_TERMINATE, FALSE, Pid));
+		if (!Process)
+			return false;
+
+		return TerminateProcess(Process.native_handle(), ERROR_PROCESS_ABORTED) != FALSE;
+	}
+
+	[[noreturn]]
+	void terminate(int const ExitCode)
+	{
+		// exit/_exit/_Exit/quick_exit/abort/ExitProcess etc. are all unreliable in one way or another.
+		// They still allow some code in CRT or other threads to run and fail spectacularly.
+
+		// "I say we take off and nuke the entire site from orbit. It’s the only way to be sure."
+		TerminateProcess(GetCurrentProcess(), ExitCode);
+		std::unreachable();
+	}
+
+	[[noreturn]]
+	void terminate_by_user(int const ExitCode)
+	{
+		terminate(ExitCode? ExitCode : EXIT_FAILURE);
 	}
 }

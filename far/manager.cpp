@@ -72,7 +72,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Common:
 #include "common/scope_exit.hpp"
-#include "common/view/reverse.hpp"
 
 // External:
 #include "format.hpp"
@@ -112,6 +111,14 @@ Manager::Key& Manager::Key::operator&=(unsigned int Key)
 	assert(m_EventFilled);
 	Fill(m_FarKey&Key);
 	return *this;
+}
+
+size_t Manager::Key::NumberOfWheelEvents() const
+{
+	if (!m_EventFilled || m_Event.EventType != MOUSE_EVENT || !(m_Event.Event.MouseEvent.dwEventFlags & (MOUSE_WHEELED | MOUSE_HWHEELED)))
+		return 1;
+
+	return std::abs(static_cast<short>(extract_integer<WORD, 1>(m_Event.Event.MouseEvent.dwButtonState)) / get_wheel_threshold(Global->Opt->MsWheelThreshold));
 }
 
 static bool CASHook(const Manager::Key& key)
@@ -157,15 +164,13 @@ static bool CASHook(const Manager::Key& key)
 		for (;;)
 		{
 			INPUT_RECORD Record;
+			GetInputRecord(&Record, true, true);
 
-			if (!PeekInputRecord(&Record, true))
+			if (Record.EventType != KEY_EVENT)
 				continue;
 
-			GetInputRecord(&Record, true, true);
 			if (!CasChecker(Record.Event.KeyEvent.dwControlKeyState))
 				break;
-
-			os::chrono::sleep_for(1ms);
 		}
 	};
 
@@ -175,13 +180,19 @@ static bool CASHook(const Manager::Key& key)
 	// AltGr + Shift is a legit way to enter the same characters in upper case (É, Ú, Ó etc.).
 	// AltGr is implemented as LeftCtrl + RightAlt and we don't want to trigger this witchcraft on AltGr+Shift.
 	// The second check is to allow RCtrl+AltGr+Shift (i.e. RCtrl+LCtrl+RAlt+Shift) to still be used for this.
-	if (flags::check_all(state, LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED) && !flags::check_all(state, RIGHT_CTRL_PRESSED))
+	if (flags::check_all(state, LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED) && !flags::check_one(state, RIGHT_CTRL_PRESSED))
 		return false;
 
+	enum
+	{
+		cas_left  = 0_bit,
+		cas_right = 1_bit
+	};
+
 	const auto
-		CaseAny   = flags::check_all(Global->Opt->CASRule, 0b11) && AnyPressed(state),
-		CaseLeft  = flags::check_all(Global->Opt->CASRule, 0b01) && LeftPressed(state),
-		CaseRight = flags::check_all(Global->Opt->CASRule, 0b10) && RightPressed(state);
+		CaseAny   = flags::check_all(Global->Opt->CASRule, cas_left | cas_right) && AnyPressed(state),
+		CaseLeft  = flags::check_one(Global->Opt->CASRule, cas_left) && LeftPressed(state),
+		CaseRight = flags::check_one(Global->Opt->CASRule, cas_right) && RightPressed(state);
 
 	if (!CaseAny && !CaseLeft && !CaseRight)
 		return false;
@@ -293,8 +304,7 @@ void Manager::CloseAll()
 
 void Manager::PushWindow(const window_ptr& Param, window_callback Callback)
 {
-	// This idiotic "self=this" is to make both VS17 and VS19 happy
-	m_Queue.emplace([=, self=this]{ std::invoke(Callback, self, Param); });
+	m_Queue.emplace([=, this]{ std::invoke(Callback, this, Param); });
 }
 
 void Manager::CheckAndPushWindow(const window_ptr& Param, window_callback Callback)
@@ -355,12 +365,16 @@ void Manager::ExecuteNonModal(const window_ptr& NonModal)
 void Manager::ExecuteModal(const window_ptr& Executed)
 {
 	bool stop=false;
-	auto& stop_ref=m_Executed[Executed];
-	if (stop_ref) return;
-	stop_ref=&stop;
+	if (!m_Executed.emplace(Executed, &stop).second)
+		return;
 
 	const auto OriginalStartManager = StartManager;
 	StartManager = true;
+	SCOPE_EXIT{ StartManager = OriginalStartManager; };
+
+	// Under normal circumstances the window breaks the loop by calling DeleteWindow.
+	// If the loop is broken by an exception, we have to restore the status quo.
+	SCOPE_FAIL{ DeleteWindow(Executed); };
 
 	for (;;)
 	{
@@ -373,9 +387,6 @@ void Manager::ExecuteModal(const window_ptr& Executed)
 
 		ProcessMainLoop();
 	}
-
-	StartManager = OriginalStartManager;
-	return;// GetModalExitCode();
 }
 
 int Manager::GetModalExitCode() const
@@ -392,7 +403,7 @@ int Manager::CountWindowsWithName(string_view const Name, bool IgnoreCase) const
 
 	string strType, strCurName;
 
-	return std::count_if(CONST_RANGE(m_windows, i)
+	return std::ranges::count_if(m_windows, [&](window_ptr const& i)
 	{
 		i->GetTypeAndName(strType, strCurName);
 		return AreEqual(Name, strCurName);
@@ -430,7 +441,7 @@ window_ptr Manager::WindowMenu()
 			}
 		}
 
-		const auto TypesWidth = std::get<0>(*std::max_element(ALL_CONST_RANGE(Data), [](const auto& a, const auto &b) { return std::get<0>(a).size() < std::get<0>(b).size(); })).size();
+		const auto TypesWidth = std::ranges::fold_left(Data, 0uz, [](size_t const Value, auto const& i){ return std::max(Value, std::get<0>(i).size()); });
 
 		const auto ModalMenu = VMenu2::create(msg(lng::MScreensTitle), {}, ScrY - 4);
 		ModalMenu->SetHelp(L"ScrSwitch"sv);
@@ -438,15 +449,15 @@ window_ptr Manager::WindowMenu()
 		ModalMenu->SetPosition({ -1, -1, 0, 0 });
 		ModalMenu->SetId(ScreensSwitchId);
 
-		for (const auto& i: irange(Data.size()))
+		for (const auto i: std::views::iota(0uz, Data.size()))
 		{
 			auto& [Type, Name, Window] = Data[i];
 
 			const auto Hotkey = static_cast<wchar_t>(i < 10? L'0' + i : i < 36? L'A' + i - 10 : L' ');
 			inplace::escape_ampersands(Name);
 			/*  добавляется "*" если файл изменен */
-			MenuItemEx ModalMenuItem(format(
-				FSTR(L"{}{}  {:<{}} {} {}"sv),
+			MenuItemEx ModalMenuItem(far::format(
+				L"{}{}  {:<{}} {} {}"sv,
 				Hotkey == L' '? L""sv : L"&"sv,
 				Hotkey,
 				Type,
@@ -480,7 +491,7 @@ window_ptr Manager::WindowMenu()
 
 int Manager::GetWindowCountByType(int Type) const
 {
-	return std::count_if(CONST_RANGE(m_windows, i)
+	return std::ranges::count_if(m_windows, [&](window_ptr const& i)
 	{
 		return !i->IsDeleting() && i->GetExitCode() != XC_QUIT && i->GetType() == Type;
 	});
@@ -489,7 +500,7 @@ int Manager::GetWindowCountByType(int Type) const
 /*$ 11.05.2001 OT Теперь можно искать файл не только по полному имени, но и отдельно - путь, отдельно имя */
 window_ptr Manager::FindWindowByFile(int const ModalType, string_view const FileName) const
 {
-	const auto ItemIterator = std::find_if(CONST_RANGE(m_windows, i)
+	const auto ItemIterator = std::ranges::find_if(m_windows, [&](window_ptr const& i)
 	{
 		// Mantis#0000469 - получать Name будем только при совпадении ModalType
 		if (!i->IsDeleting() && i->GetType() == ModalType)
@@ -553,8 +564,7 @@ void Manager::ExecuteWindow(const window_ptr& Executed)
 
 void Manager::ReplaceWindow(const window_ptr& Old, const window_ptr& New)
 {
-	// This idiotic "self=this" is to make both VS17 and VS19 happy
-	m_Queue.emplace([=, self=this]{ self->ReplaceCommit(Old, New); });
+	m_Queue.emplace([=, this]{ ReplaceCommit(Old, New); });
 }
 
 void Manager::ModalDesktopWindow()
@@ -571,7 +581,7 @@ void Manager::SwitchToPanels()
 {
 	if (!Global->OnlyEditorViewerUsed)
 	{
-		const auto PanelsWindow = std::find_if(ALL_CONST_RANGE(m_windows), [](const auto& item) { return std::dynamic_pointer_cast<FilePanels>(item) != nullptr; });
+		const auto PanelsWindow = std::ranges::find_if(m_windows, [](const auto& item) { return std::dynamic_pointer_cast<FilePanels>(item) != nullptr; });
 		if (PanelsWindow != m_windows.cend())
 		{
 			ActivateWindow(*PanelsWindow);
@@ -640,13 +650,8 @@ void Manager::ProcessMainLoop()
 	}
 }
 
-void Manager::ExitMainLoop(int Ask)
+void Manager::ExitMainLoop(int Ask, int ExitCode)
 {
-	if (Global->CloseFAR)
-	{
-		Global->CloseFARMenu = true;
-	}
-
 	if (!Ask || !Global->Opt->Confirm.Exit || Message(0,
 		msg(lng::MQuit),
 		{
@@ -661,13 +666,12 @@ void Manager::ExitMainLoop(int Ask)
 		*/
 		if (ExitAll() || Global->CloseFAR)
 		{
+			Global->FarExitCode = ExitCode;
+			Global->CtrlObject->Plugins->NotifyExitLuaMacro();
+
 			const auto cp = Global->CtrlObject->Cp();
 			if (!cp || (!cp->LeftPanel()->ProcessPluginEvent(FE_CLOSE, nullptr) && !cp->RightPanel()->ProcessPluginEvent(FE_CLOSE, nullptr)))
 				EndLoop=true;
-		}
-		else
-		{
-			Global->CloseFARMenu = false;
 		}
 	}
 }
@@ -703,7 +707,7 @@ bool Manager::ProcessKey(Key key)
 		/*** А вот здесь - все остальное! ***/
 		if (!Global->IsProcessAssignMacroKey)
 		{
-			if (std::any_of(CONST_RANGE(m_GlobalKeyHandlers, i) { return i(key); }))
+			if (std::ranges::any_of(m_GlobalKeyHandlers, [&](auto const& i){ return i(key); }))
 			{
 				return true;
 			}
@@ -879,7 +883,7 @@ window_ptr Manager::GetWindow(size_t Index) const
 
 int Manager::IndexOf(const window_ptr& Window) const
 {
-	const auto ItemIterator = std::find(ALL_CONST_RANGE(m_windows), Window);
+	const auto ItemIterator = std::ranges::find(m_windows, Window);
 	return ItemIterator != m_windows.cend() ? ItemIterator - m_windows.cbegin() : -1;
 }
 
@@ -929,10 +933,7 @@ void Manager::DeleteCommit(const window_ptr& Param)
 	if (CurrentWindow == Param) DeactivateCommit(Param);
 	Param->OnDestroy();
 
-	const auto WindowIndex=IndexOf(Param);
-	assert(-1!=WindowIndex);
-
-	if (-1!=WindowIndex)
+	if (const auto WindowIndex = IndexOf(Param); WindowIndex != -1)
 	{
 		m_windows.erase(m_windows.begin() + WindowIndex);
 		WindowsChanged();
@@ -962,16 +963,13 @@ void Manager::DeleteCommit(const window_ptr& Param)
 
 	assert(GetCurrentWindow()!=Param);
 
-	const auto stop = m_Executed.find(Param);
-	if (stop != m_Executed.end())
+	if (const auto stop = m_Executed.find(Param); stop != m_Executed.end())
 	{
-		*(stop->second)=true;
+		*stop->second = true;
 		m_Executed.erase(stop);
 	}
 
-	[[maybe_unused]]
-	const auto size = m_Added.erase(Param);
-	assert(size==1);
+	m_Added.erase(Param);
 }
 
 void Manager::ActivateCommit(const window_ptr& Param)
@@ -1027,7 +1025,7 @@ void Manager::RefreshCommit(const window_ptr& Param)
 		m_windows_changed.pop_back();
 	};
 
-	for (const auto& i: range(std::next(m_windows.begin(), (Param->HasSaveScreen() && !IsSpecialWindow)?0:WindowIndex), m_windows.end()))
+	for (const auto& i: std::ranges::subrange(std::next(m_windows.begin(), (Param->HasSaveScreen() && !IsSpecialWindow)?0:WindowIndex), m_windows.end()))
 	{
 		i->Refresh();
 		if (m_windows_changed[ChangedIndex - 1]) //ой, всё!
@@ -1203,7 +1201,7 @@ desktop* Manager::Desktop() const
 
 Viewer* Manager::GetCurrentViewer() const
 {
-	for (const auto& i: reverse(m_windows))
+	for (const auto& i: std::views::reverse(m_windows))
 	{
 		if (const auto v = std::dynamic_pointer_cast<ViewerContainer>(i))
 		{
@@ -1216,7 +1214,7 @@ Viewer* Manager::GetCurrentViewer() const
 
 FileEditor* Manager::GetCurrentEditor() const
 {
-	for (const auto& i: reverse(m_windows))
+	for (const auto& i: std::views::reverse(m_windows))
 	{
 		if (const auto e = std::dynamic_pointer_cast<FileEditor>(i))
 		{
@@ -1229,5 +1227,10 @@ FileEditor* Manager::GetCurrentEditor() const
 
 Manager::windows::const_iterator Manager::IsSpecialWindow() const
 {
-	return std::find_if(CONST_RANGE(m_windows, i) { return i->IsSpecial(); });
+	return std::ranges::find_if(m_windows, [](window_ptr const& i){ return i->IsSpecial(); });
+}
+
+void Manager::FolderChanged()
+{
+	CallbackWindow([](){ Global->CtrlObject->Plugins->ProcessSynchroEvent(SE_FOLDERCHANGED, nullptr); });
 }

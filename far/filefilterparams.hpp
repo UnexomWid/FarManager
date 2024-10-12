@@ -96,8 +96,7 @@ public:
 
 	explicit operator bool() const;
 
-	template<typename callable>
-	decltype(auto) visit(const callable& Callable) const
+	decltype(auto) visit(const auto& Callable) const
 	{
 		return m_Relative?
 			Callable(m_After, m_Before) :
@@ -142,7 +141,7 @@ public:
 	bool  GetHardLinks(DWORD *HardLinksAbove, DWORD *HardLinksBelow) const;
 	bool  GetAttr(os::fs::attributes* AttrSet, os::fs::attributes* AttrClear) const;
 	highlight::element GetColors() const;
-	wchar_t GetMarkChar() const;
+	const string& GetMark() const;
 	int   GetSortGroup() const { return FHighlight.SortGroup; }
 	bool  GetContinueProcessing() const { return FHighlight.bContinueProcessing; }
 	DWORD GetFlags(filter_area FType) const { return FFlags[static_cast<size_t>(FType)]; }

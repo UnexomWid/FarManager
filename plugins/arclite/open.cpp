@@ -7,7 +7,7 @@
 #include "msearch.hpp"
 #include "archive.hpp"
 
-OpenOptions::OpenOptions() : detect(false), open_password_len(nullptr)
+OpenOptions::OpenOptions() : detect(false), open_password_len(nullptr), recursive_panel(false), delete_on_close('\0')
 {}
 
 class ArchiveSubStream : public IInStream, private ComBase {
@@ -357,12 +357,20 @@ HRESULT Archive::copy_prologue(IOutStream *out_stream)
   return res;
 }
 
-bool Archive::open(IInStream* stream, const ArcType& type) {
+bool Archive::open(IInStream* stream, const ArcType& type, const bool allow_tail) {
   ArcAPI::create_in_archive(type, in_arc.ref());
   ComObject<IArchiveOpenCallback> opener(new ArchiveOpener(shared_from_this()));
+  if (allow_tail && ArcAPI::formats().at(type).Flags_PreArc())  {
+    ComObject<IArchiveAllowTail> allowTail;
+    in_arc->QueryInterface(IID_IArchiveAllowTail, (void**)&allowTail);
+    if (allowTail)
+      allowTail->AllowTail(TRUE);
+  }
   const UInt64 max_check_start_position = 0;
-  HRESULT res;
-  COM_ERROR_CHECK(res = in_arc->Open(stream, &max_check_start_position, opener));
+  auto res = in_arc->Open(stream, &max_check_start_position, opener);
+  if (res == HRESULT_FROM_WIN32(ERROR_INVALID_DATA)) // unfriendly eDecode
+	  res = S_FALSE;
+  COM_ERROR_CHECK(res);
   return res == S_OK;
 }
 
@@ -586,22 +594,25 @@ void Archive::open(const OpenOptions& options, Archives& archives) {
     if (parent_idx != (size_t)-1)
       archive->volume_names = archives[parent_idx]->volume_names;
 
-#ifdef _DEBUG
     const auto& format = ArcAPI::formats().at(arc_entry->type);
-    (void)format;
-#endif
-    bool opened = false;
+    bool opened = false, have_tail = false;
     CHECK_COM(stream->Seek(arc_entry->sig_pos, STREAM_SEEK_SET, nullptr));
     if (!arc_entry->sig_pos) {
       opened = archive->open(stream, arc_entry->type);
       if (archive->m_open_password && options.open_password_len)
         *options.open_password_len = archive->m_open_password;
       if (!opened && first_open) {
-        auto next_entry = arc_entry;
-        ++next_entry;
-        if (next_entry != arc_entries.cend() && next_entry->sig_pos > 0) {
-          skip_header = archive->get_skip_header(stream, arc_entry->type);
+        if (format.Flags_PreArc()) {
+           stream->Seek(0, STREAM_SEEK_SET, nullptr);
+           opened = have_tail = archive->open(stream, arc_entry->type, true);
         }
+        if (!opened) {
+          auto next_entry = arc_entry;
+          ++next_entry;
+          if (next_entry != arc_entries.cend() && next_entry->sig_pos > 0) {
+            skip_header = archive->get_skip_header(stream, arc_entry->type);
+          }
+		  }
       }
     }
     else if (arc_entry->sig_pos >= skip_header) {
@@ -623,7 +634,7 @@ void Archive::open(const OpenOptions& options, Archives& archives) {
       archives.push_back(archive);
       open(options, archives);
 
-      if (!options.detect)
+      if (!options.detect && !have_tail)
         break;
       skip_header = arc_entry->sig_pos + std::min(archive->arc_info.size(), archive->get_physize());
     }

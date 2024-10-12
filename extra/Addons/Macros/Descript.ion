@@ -10,12 +10,13 @@ Edit.Notepad.lua Editor: Notepad-like shortcuts
 Edit.OpenURL.lua Editor: Open URL or UNC under cursor
 Edit.SaveAndExit.lua Editor: Save File and Exit
 Edit.SaveFile.lua Editor: Save File
+Edit.SelectionStartEnd.lua Editor: Start/end selection with separate hotkeys
 Editor.ColorWord.moon Editor: Color Word Under Cursor
 F3.lua Use internal editor as viewer
 F9DeactivateMenu.lua Use F9 to deactivate main menu
 F9Table.lua Use F9 to change current table in viewer and editor
-OpeningLastFile.lua Opening last view/edit of a file
-Panel.AltBS.lua Panel: Use Alt+BS to undo folder changes
+OpeningLastFile.lua Opening previous view/edit (from history)
+Panel.AltBS.lua Panel: Folders history navigation
 Panel.Apps.lua Panel: Use Apps to Change drive in current panel
 Panel.BS.lua Panel: Use BS to go to upper folder
 Panel.CtrlIns...lua Panel: Use CtrlIns to copy current path when pressed on '..'
@@ -36,6 +37,7 @@ Panel.SpaceToSelect.lua Panel: Use Space to select files
 Search.CtrlIns.lua Close Fast find and send key to panel
 ShiftBS.lua Converts the word before cursor using XLat function.
 ShiftTab.lua Shift+Tab = Ctrl+Shift+Tab
+SwapHorizontalScrollDirection.lua Panel, Viewer and Menu: Swap horizontal scroll direction
 Symlink.lua Alternative way to create symbolic links
 UppercaseFolders.lua Restore the option "Create folders in uppercase" that was removed in Far 3.0.4184
 View.CtrlUpDown.lua Viewer: Scroll screen (using keys like in editor)
@@ -43,4 +45,5 @@ View.NextPrevFile.lua Viewer: update panel position when navigating through file
 View.PgDn.lua Viewer: PgDn: never scroll beyond EOF (like in FAR 1.70 beta 4 and earlier)
 View.ShiftInsSearch.lua Viewer: Use Shift+Ins to search text from clipboard in internal viewer
 View.Space.lua Viewer: Use Space for listing in the viewer (like in Outlook Express or The Bat!)
+View.TypeToSearch.lua Viewer: Bring up the Search dialog with the typed character or pasted text
 WheelScreenSwitch.lua Use Shift+MsWheel to switch between screens

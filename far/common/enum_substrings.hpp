@@ -47,7 +47,7 @@ template<class char_type>
 auto enum_substrings(char_type const* const Str, std::optional<size_t> const Size = {})
 {
 	using value_type = std::basic_string_view<char_type>;
-	return make_inline_enumerator<value_type>([Iterator = Str, Str, Size](const bool Reset, value_type& Value) mutable
+	return inline_enumerator<value_type>([Iterator = Str, Str, Size](const bool Reset, value_type& Value) mutable
 	{
 		if (Reset)
 			Iterator = Str;
@@ -72,7 +72,7 @@ auto enum_substrings(char_type const* const Str, std::optional<size_t> const Siz
 	});
 }
 
-template<class string_type, REQUIRES(!std::is_pointer_v<string_type> && !std::is_rvalue_reference_v<string_type>)>
+template<class string_type> requires (!std::is_pointer_v<string_type>) && (!std::is_rvalue_reference_v<string_type>)
 [[nodiscard]]
 auto enum_substrings(string_type&& Str)
 {

@@ -51,12 +51,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class RegExp;
 struct RegExpMatch;
-struct named_regex_match;
+class regex_match;
+class named_regex_match;
 
 namespace legacy
 {
-	wchar_t* QuoteSpace(wchar_t* Str);
-	wchar_t* InsertQuotes(wchar_t* Str);
 	wchar_t* QuoteSpaceOnly(wchar_t* Str);
 }
 
@@ -88,9 +87,23 @@ inline void replace(string& Str, string_view const Find, string_view const Repla
 	ReplaceStrings(Str, Find, Replace, false);
 }
 
+inline auto replace(string_view const Str, string_view const Find, string_view const Replace)
+{
+	string Copy(Str);
+	replace(Copy, Find, Replace);
+	return Copy;
+}
+
 inline void replace_icase(string& Str, string_view const Find, string_view const Replace)
 {
 	ReplaceStrings(Str, Find, Replace, true);
+}
+
+inline auto replace_icase(string_view const Str, string_view const Find, string_view const Replace)
+{
+	string Copy(Str);
+	replace_icase(Copy, Find, Replace);
+	return Copy;
 }
 
 void remove_duplicates(string& Str, wchar_t Char, bool IgnoreCase = false);
@@ -100,8 +113,7 @@ class [[nodiscard]] wrapped_text : public enumerator<wrapped_text, string_view>
 	IMPLEMENTS_ENUMERATOR(wrapped_text);
 
 public:
-	template<typename string_type>
-	explicit wrapped_text(string_type&& Str, size_t const Width):
+	explicit wrapped_text(auto&& Str, size_t const Width):
 		m_Str(FWD(Str)),
 		m_Tail(m_Str),
 		m_Width(Width? Width : m_Tail.size())
@@ -123,13 +135,21 @@ void PrepareUnitStr();
 string FileSizeToStr(unsigned long long FileSize, int WidthWithSign = -1, unsigned long long ViewFlags = COLFLAGS_GROUPDIGITS);
 
 [[nodiscard]]
+string FileSizeToStrInvariant(unsigned long long FileSize, int WidthWithSign = -1, unsigned long long ViewFlags = COLFLAGS_GROUPDIGITS);
+
+[[nodiscard]]
 bool CheckFileSizeStringFormat(string_view FileSizeStr);
 
 [[nodiscard]]
 unsigned long long ConvertFileSizeString(string_view FileSizeStr);
 
 [[nodiscard]]
+string ReplaceBrackets(string_view SearchStr, string_view ReplaceStr, std::span<RegExpMatch const> Match, const named_regex_match* NamedMatch);
+
+[[nodiscard]]
 string GroupDigits(unsigned long long Value);
+[[nodiscard]]
+string GroupDigitsInvariant(unsigned long long Value);
 
 [[nodiscard]]
 inline bool IsWordDiv(string_view const WordDiv, wchar_t const Chr)
@@ -143,8 +163,6 @@ bool FindWordInString(string_view Str, size_t CurPos, size_t& Begin, size_t& End
 namespace legacy
 {
 	wchar_t* truncate_left(wchar_t* Str, int MaxLength);
-	wchar_t* truncate_center(wchar_t* Str, int MaxLength);
-	wchar_t* truncate_right(wchar_t* Str, int MaxLength);
 	wchar_t* truncate_path(wchar_t* Str, int MaxLength);
 }
 
@@ -189,14 +207,11 @@ bool SearchString(
 	string_view Needle,
 	i_searcher const& NeedleSearcher,
 	const RegExp& re,
-	std::vector<RegExpMatch>& Match,
+	regex_match& Match,
 	named_regex_match* NamedMatch,
 	int& CurPos,
-	search_case_fold CaseFold,
-	bool WholeWords,
-	bool Reverse,
-	bool Regexp,
-	int* SearchLength,
+	search_replace_string_options options,
+	int& SearchLength,
 	string_view WordDiv
 );
 
@@ -206,16 +221,12 @@ bool SearchAndReplaceString(
 	string_view Needle,
 	i_searcher const& NeedleSearcher,
 	const RegExp& re,
-	std::vector<RegExpMatch>& Match,
+	regex_match& Match,
 	named_regex_match* NamedMatch,
 	string& ReplaceStr,
 	int& CurPos,
-	search_case_fold CaseFold,
-	bool WholeWords,
-	bool Reverse,
-	bool Regexp,
-	bool PreserveStyle,
-	int* SearchLength,
+	search_replace_string_options options,
+	int& SearchLength,
 	string_view WordDiv
 );
 
@@ -225,44 +236,62 @@ inline wchar_t* UNSAFE_CSTR(const string& s) noexcept {return const_cast<wchar_t
 [[nodiscard]]
 inline wchar_t* UNSAFE_CSTR(null_terminated const& s) noexcept {return const_cast<wchar_t*>(s.c_str());}
 
-template<class container>
-[[nodiscard]]
-auto FlagsToString(unsigned long long Flags, const container& From, wchar_t Separator = L' ')
+namespace detail
 {
-	string strFlags;
-	for (const auto& [Value, Name]: From)
+	template<typename flags_type>
+	[[nodiscard]]
+	auto FlagsToString(unsigned long long Flags, std::span<std::pair<flags_type, string_view> const> const From, wchar_t Separator = L' ')
 	{
-		if (Flags & Value)
+		string strFlags;
+		for (const auto& [Value, Name]: From)
 		{
-			append(strFlags, Name, Separator);
+			if (Flags & Value)
+			{
+				append(strFlags, Name, Separator);
+			}
 		}
+
+		if (!strFlags.empty())
+		{
+			strFlags.pop_back();
+		}
+
+		return strFlags;
 	}
 
-	if (!strFlags.empty())
+	template<typename flags_type>
+	[[nodiscard]]
+	auto StringToFlags(string_view const strFlags, std::span<std::pair<flags_type, string_view> const> const From, const string_view Separators = L"|;, "sv)
 	{
-		strFlags.pop_back();
-	}
+		flags_type Flags{};
 
-	return strFlags;
+		if (strFlags.empty())
+			return Flags;
+
+		for (const auto& i: enum_tokens(strFlags, Separators))
+		{
+			if (i.empty())
+				continue;
+
+			const auto ItemIterator = std::ranges::find_if(From, [&](auto const& j){ return equal_icase(i, j.second); });
+			if (ItemIterator != From.end())
+				Flags |= ItemIterator->first;
+		}
+
+		return Flags;
+	}
 }
 
-template<class container>
 [[nodiscard]]
-auto StringToFlags(string_view const strFlags, const container& From, const string_view Separators = L"|;, "sv)
+auto FlagsToString(unsigned long long const Flags, std::ranges::contiguous_range auto const& From, wchar_t const Separator = L' ')
 {
-	decltype(std::begin(From)->first) Flags {};
+	return detail::FlagsToString(Flags, span(From), Separator);
+}
 
-	if (strFlags.empty())
-		return Flags;
-
-	for (const auto& i: enum_tokens(strFlags, Separators))
-	{
-		const auto ItemIterator = std::find_if(CONST_RANGE(From, j) { return equal_icase(i, j.second); });
-		if (ItemIterator != std::cend(From))
-			Flags |= ItemIterator->first;
-	}
-
-	return Flags;
+[[nodiscard]]
+auto StringToFlags(string_view const strFlags, std::ranges::contiguous_range auto const& From, string_view const Separators = L"|;, "sv)
+{
+	return detail::StringToFlags(strFlags, span(From), Separators);
 }
 
 [[nodiscard]]
@@ -277,13 +306,11 @@ string BlobToHexString(bytes_view Blob, wchar_t Separator = L',');
 [[nodiscard]]
 bytes HexStringToBlob(string_view Hex, wchar_t Separator = L',');
 
-template<class T>
 [[nodiscard]]
-auto to_hex_wstring(T Value)
+auto to_hex_wstring(std::integral auto Value)
 {
-	static_assert(std::is_integral_v<T>);
-	string Result(sizeof(T) * 2, '0');
-	for (int i = sizeof(T) * 2 - 1; i >= 0; --i, Value >>= 4)
+	string Result(sizeof(Value) * 2, '0');
+	for (int i = sizeof(Value) * 2 - 1; i >= 0; --i, Value >>= 4)
 		Result[i] = IntToHex(Value & 0xF);
 	return Result;
 }
@@ -293,6 +320,12 @@ string ExtractHexString(string_view HexString);
 
 [[nodiscard]]
 string ConvertHexString(string_view From, uintptr_t Codepage, bool FromHex);
+
+[[nodiscard]]
+string BytesToString(bytes_view Bytes, uintptr_t Codepage);
+
+[[nodiscard]]
+string HexMask(size_t ByteCount);
 
 void xstrncpy(char* dest, const char* src, size_t DestSize);
 void xwcsncpy(wchar_t* dest, const wchar_t* src, size_t DestSize);

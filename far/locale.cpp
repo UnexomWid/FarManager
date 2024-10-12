@@ -40,10 +40,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "console.hpp"
 #include "global.hpp"
 #include "encoding.hpp"
-#include "exception.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 
 // Common:
 #include "common/algorithm.hpp"
@@ -84,7 +84,7 @@ static auto get_date_format()
 	int DateFormat;
 	if (!os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_IDATE, DateFormat))
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_IDATE): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_IDATE): {}"sv, os::last_error());
 		DateFormat = 2;
 	}
 
@@ -101,7 +101,7 @@ static auto get_digits_grouping()
 	string Grouping;
 	if (!os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SGROUPING, Grouping))
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_SGROUPING): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_SGROUPING): {}"sv, os::last_error());
 		return 3;
 	}
 
@@ -112,7 +112,7 @@ static auto get_digits_grouping()
 			DigitsGrouping = DigitsGrouping * 10 + i - L'0';
 	}
 
-	if (!ends_with(Grouping, L";0"sv))
+	if (!Grouping.ends_with(L";0"sv))
 		DigitsGrouping *= 10;
 
 	return DigitsGrouping;
@@ -122,43 +122,40 @@ static auto get_date_separator()
 {
 	const auto KnownSeparators = L"/-."sv;
 
-	string Value;
-	if (os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SSHORTDATE, Value))
+	if (string Value; os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SSHORTDATE, Value))
 	{
-		size_t pos = 0;
+		size_t StartPos = 0;
 		const auto Weekday = L"ddd"sv;
 		const auto dMyg = L"dMyg"sv;
 
 		// Skip day of week, if any
-		if (starts_with(Value, Weekday))
+		if (Value.starts_with(Weekday))
 		{
-			pos = Value.find_first_not_of(L'd', Weekday.size());
+			StartPos = Value.find_first_not_of(L'd', Weekday.size());
 			// skip separators
-			pos = Value.find_first_of(dMyg, pos);
+			StartPos = Value.find_first_of(dMyg, StartPos);
 		}
 
 		// Find a preferable separator
-		pos = Value.find_first_of(KnownSeparators);
-		if (pos != Value.npos)
-			return Value[pos];
+		if (const auto SeparatorPos = Value.find_first_of(KnownSeparators, StartPos); SeparatorPos != Value.npos)
+			return Value[SeparatorPos];
 
 		// Find any other separator
-		pos = Value.find_first_not_of(dMyg, pos);
-		if (pos != Value.npos)
-			return Value[pos];
+		if (const auto SeparatorPos = Value.find_first_not_of(dMyg, StartPos); SeparatorPos != Value.npos)
+			return Value[SeparatorPos];
 	}
 	else
 	{
-		LOGDEBUG(L"get_locale_value(LOCALE_SSHORTDATE): {}"sv, last_error());
+		LOGDEBUG(L"get_locale_value(LOCALE_SSHORTDATE): {}"sv, os::last_error());
 	}
 
-	if (os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SDATE, Value))
+	if (string Value; os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SDATE, Value))
 	{
 		return Value.empty()? KnownSeparators.front() : Value.front();
 	}
 	else
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_SDATE): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_SDATE): {}"sv, os::last_error());
 	}
 
 	return KnownSeparators.front();
@@ -169,7 +166,7 @@ static auto get_time_separator()
 	string Value;
 	if (!os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_STIME, Value))
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_STIME): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_STIME): {}"sv, os::last_error());
 	}
 
 	return Value.empty()? L':' : Value.front();
@@ -185,7 +182,7 @@ static auto get_decimal_separator()
 	string Value;
 	if (!os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_SDECIMAL, Value))
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_SDECIMAL): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_SDECIMAL): {}"sv, os::last_error());
 	}
 
 	return Value.empty()? L'.' : Value.front();
@@ -201,7 +198,7 @@ static auto get_thousand_separator()
 	string Value;
 	if (!os::get_locale_value(LOCALE_USER_DEFAULT, LOCALE_STHOUSAND, Value))
 	{
-		LOGWARNING(L"get_locale_value(LOCALE_STHOUSAND): {}"sv, last_error());
+		LOGWARNING(L"get_locale_value(LOCALE_STHOUSAND): {}"sv, os::last_error());
 	}
 
 	return Value.empty()? L',' : Value.front();
@@ -242,13 +239,13 @@ static auto get_month_day_names(int const Language)
 		if (!os::get_locale_value(CurLCID, Init.Index, Dest.Full))
 		{
 			Dest.Full = Init.Default;
-			LOGWARNING(L"get_locale_value(LOCALE_SMONTHNAME{}): {}"sv, Init.Index, last_error());
+			LOGWARNING(L"get_locale_value(LOCALE_SMONTHNAME{}): {}"sv, Init.Index, os::last_error());
 		}
 
 		if (!os::get_locale_value(CurLCID, Init.AbbrIndex, Dest.Short))
 		{
 			Dest.Full = Init.Default.substr(0, 3);
-			LOGWARNING(L"get_locale_value(LOCALE_SABBREVMONTHNAME{}): {}"sv, Init.AbbrIndex, last_error());
+			LOGWARNING(L"get_locale_value(LOCALE_SABBREVMONTHNAME{}): {}"sv, Init.AbbrIndex, os::last_error());
 		}
 	}
 
@@ -271,13 +268,13 @@ static auto get_month_day_names(int const Language)
 		if (!os::get_locale_value(CurLCID, Init.Index, Dest.Full))
 		{
 			Dest.Full = Init.Default;
-			LOGWARNING(L"get_locale_value({}): {}"sv, Init.Index, last_error());
+			LOGWARNING(L"get_locale_value({}): {}"sv, Init.Index, os::last_error());
 		}
 
 		if (!os::get_locale_value(CurLCID, Init.AbbrIndex, Dest.Short))
 		{
 			Dest.Full = Init.Default.substr(0, 3);
-			LOGWARNING(L"get_locale_value({}): {}"sv, Init.AbbrIndex, last_error());
+			LOGWARNING(L"get_locale_value({}): {}"sv, Init.AbbrIndex, os::last_error());
 		}
 	}
 
@@ -286,6 +283,30 @@ static auto get_month_day_names(int const Language)
 
 namespace detail
 {
+	locale::locale(bool const Invariant):
+		m_IsInvariant(Invariant)
+	{
+		if (m_IsInvariant)
+		{
+			m_IsCJK = false;
+			m_DateFormat = date_type::mdy;
+			m_DigitsGrouping = 3;
+			m_DateSeparator = L'/';
+			m_TimeSeparator = L':';
+			m_DecimalSeparator = L'.';
+			m_ThousandSeparator = L',';
+
+			m_LocalNames = m_EnglishNames = get_month_day_names(LANG_ENGLISH);
+
+			m_Valid = true;
+		}
+	}
+
+	bool locale::is_invariant() const
+	{
+		return m_IsInvariant;
+	}
+
 	bool locale::is_cjk() const
 	{
 		refresh();
@@ -298,7 +319,7 @@ namespace detail
 		return m_DateFormat;
 	}
 
-	int locale::digits_grouping() const
+	unsigned locale::digits_grouping() const
 	{
 		refresh();
 		return m_DigitsGrouping;
@@ -348,6 +369,9 @@ namespace detail
 
 	void locale::invalidate()
 	{
+		if (m_IsInvariant)
+			return;
+
 		m_Valid = false;
 
 		if (Global)
@@ -358,7 +382,7 @@ namespace detail
 
 	void locale::refresh() const
 	{
-		if (m_Valid)
+		if (m_Valid || m_IsInvariant)
 			return;
 
 		m_IsCJK = get_is_cjk();
@@ -374,4 +398,10 @@ namespace detail
 
 		m_Valid = true;
 	}
+}
+
+detail::locale const& invariant_locale()
+{
+	static const detail::locale s_InvariantLocale(true);
+	return s_InvariantLocale;
 }

@@ -221,6 +221,15 @@ bool File::set_time_nt(const FILETIME& ctime, const FILETIME& atime, const FILET
   return SetFileTime(h_file, &ctime, &atime, &mtime) != 0;
 };
 
+bool File::copy_ctime_from(const std::wstring& source_file) noexcept
+{
+  WIN32_FILE_ATTRIBUTE_DATA fa;
+  if (!attributes_ex(source_file, &fa))
+    return false;
+  FILETIME dummy{};
+  return set_time_nt(fa.ftCreationTime, dummy, dummy);
+}
+
 uint64_t File::set_pos(int64_t offset, DWORD method) {
   uint64_t new_pos;
   CHECK_FILE(set_pos_nt(offset, method, &new_pos), m_file_path);
@@ -265,6 +274,40 @@ DWORD File::attributes(const std::wstring& file_path) noexcept {
     return system_functions->GetFileAttributes(long_path_norm(file_path).c_str());
   else
     return GetFileAttributesW(long_path_norm(file_path).c_str());
+}
+
+bool File::attributes_ex(const std::wstring& file_path, WIN32_FILE_ATTRIBUTE_DATA* ex_attrs) noexcept
+{
+  static int have_attributes_ex = 0;
+  static BOOL (WINAPI *pfGetFileAttributesExW)(LPCWSTR pname, GET_FILEEX_INFO_LEVELS level, LPVOID pinfo) = nullptr;
+  if (have_attributes_ex == 0) {
+    auto pf = GetProcAddress(GetModuleHandleW(L"kernel32"), "GetFileAttributesExW");
+    if (pf == nullptr)
+      have_attributes_ex = -1;
+    else {
+      pfGetFileAttributesExW = reinterpret_cast<decltype(pfGetFileAttributesExW)>(reinterpret_cast<void*>(pf));
+      have_attributes_ex = +1;
+    }
+  }
+
+  auto norm_path = long_path_norm(file_path);
+  if (have_attributes_ex > 0) {
+    return pfGetFileAttributesExW(norm_path.c_str(), GetFileExInfoStandard, ex_attrs) != FALSE;
+  }
+  else {
+    WIN32_FIND_DATAW ff;
+    auto hfind = FindFirstFileW(norm_path.c_str(), &ff);
+    if (hfind == INVALID_HANDLE_VALUE)
+      return false;
+    FindClose(hfind);
+    ex_attrs->dwFileAttributes = ff.dwFileAttributes;
+    ex_attrs->ftCreationTime   = ff.ftCreationTime;
+    ex_attrs->ftLastWriteTime  = ff.ftLastWriteTime;
+    ex_attrs->ftLastAccessTime = ff.ftLastAccessTime;
+    ex_attrs->nFileSizeLow     = ff.nFileSizeLow;
+    ex_attrs->nFileSizeHigh    = ff.nFileSizeHigh;
+	 return true;
+  }
 }
 
 void File::set_attr(const std::wstring& file_path, DWORD attr) {

@@ -84,6 +84,7 @@ public:
   bool write_nt(const void* data, size_t size, size_t& size_written) noexcept;
   void set_time(const FILETIME& ctime, const FILETIME& atime, const FILETIME& mtime);
   bool set_time_nt(const FILETIME& ctime, const FILETIME& atime, const FILETIME& mtime) noexcept;
+  bool copy_ctime_from(const std::wstring& source_file) noexcept;
   uint64_t set_pos(int64_t offset, DWORD method = FILE_BEGIN);
   bool set_pos_nt(int64_t offset, DWORD method = FILE_BEGIN, uint64_t* new_pos = nullptr) noexcept;
   void set_end();
@@ -95,6 +96,7 @@ public:
     return DeviceIoControl(h_file, code, nullptr, 0, &data, sizeof(Type), &size_ret, nullptr) != 0;
   }
   static DWORD attributes(const std::wstring& file_path) noexcept;
+  static bool attributes_ex(const std::wstring& file_path, WIN32_FILE_ATTRIBUTE_DATA* ex_attrs) noexcept;
   static bool exists(const std::wstring& file_path) noexcept;
   static void set_attr(const std::wstring& file_path, DWORD attr);
   static bool set_attr_nt(const std::wstring& file_path, DWORD attr) noexcept;

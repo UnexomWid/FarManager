@@ -42,9 +42,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "stddlg.hpp"
 #include "pathmix.hpp"
 #include "strmix.hpp"
-#include "exception.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 #include "platform.reg.hpp"
 
@@ -59,10 +59,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 static string GetStoredUserName(wchar_t Drive)
 {
 	//Тут может быть надо заюзать WNetGetUser
-	string UserName;
-	// BUGBUG check result
-	(void)os::reg::key::current_user.get(concat(L"Network\\"sv, Drive), L"UserName"sv, UserName);
-	return UserName;
+	if (const auto Value = os::reg::key::current_user.get_string(concat(L"Network\\"sv, Drive), L"UserName"sv))
+		return *Value;
+
+	return {};
 }
 
 os::fs::drives_set GetSavedNetworkDrives()
@@ -92,7 +92,7 @@ os::fs::drives_set GetSavedNetworkDrives()
 		if (Result != NO_ERROR || !Count)
 			break;
 
-		for (const auto& i: span(Buffer.data(), Count))
+		for (const auto& i: std::span(Buffer.data(), Count))
 		{
 			const auto Name = i.lpLocalName;
 			if (os::fs::drive::is_standard_letter(Name[0]) && Name[1] == L':')
@@ -148,7 +148,7 @@ bool ConnectToNetworkResource(string_view const NewDir)
 			return true;
 		else if (Result != ERROR_ACCESS_DENIED && Result != ERROR_INVALID_PASSWORD && Result != ERROR_LOGON_FAILURE)
 		{
-			Message(MSG_WARNING, last_error(),
+			Message(MSG_WARNING, os::last_error(),
 				msg(lng::MError),
 				{
 					string(NewDir)
@@ -191,7 +191,7 @@ string ExtractComputerName(const string_view CurDir, string* const strTail)
 		return {};
 
 	if (strTail)
-		strTail->assign(Result, pos + 1, string::npos); // gcc 7.3-8.1 bug: npos required. TODO: Remove after we move to 8.2 or later)
+		strTail->assign(Result, pos + 1);
 
 	Result.resize(pos);
 

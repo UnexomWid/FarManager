@@ -40,11 +40,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "elevation.hpp"
 #include "exception_handler.hpp"
 #include "pathmix.hpp"
-#include "exception.hpp"
 #include "log.hpp"
 #include "notification.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.concurrency.hpp"
 #include "platform.debug.hpp"
 #include "platform.fs.hpp"
@@ -60,15 +60,17 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class background_watcher: public singleton<background_watcher>
 {
+	IMPLEMENTS_SINGLETON;
+
 public:
 	void add(const FileSystemWatcher* Client)
 	{
-		SCOPED_ACTION(std::lock_guard)(m_CS);
+		SCOPED_ACTION(std::scoped_lock)(m_CS);
 
 		m_Clients.emplace_back(Client);
 
 		if (!m_Thread.joinable() || m_Thread.is_signaled())
-			m_Thread = os::thread{ os::thread::mode::join, &background_watcher::process, this };
+			m_Thread = os::thread(&background_watcher::process, this);
 
 		m_Update.set();
 	}
@@ -76,7 +78,7 @@ public:
 	void remove(const FileSystemWatcher* Client)
 	{
 		{
-			SCOPED_ACTION(std::lock_guard)(m_CS);
+			SCOPED_ACTION(std::scoped_lock)(m_CS);
 
 			std::erase(m_Clients, Client);
 		}
@@ -100,7 +102,7 @@ private:
 				SCOPE_EXIT{ m_UpdateDone.set(); };
 
 				{
-					SCOPED_ACTION(std::lock_guard)(m_CS);
+					SCOPED_ACTION(std::scoped_lock)(m_CS);
 
 					if (m_Clients.empty())
 					{
@@ -109,17 +111,22 @@ private:
 					}
 
 					m_Handles.resize(1);
-					std::transform(ALL_CONST_RANGE(m_Clients), std::back_inserter(m_Handles), [](const FileSystemWatcher* const Client) { return Client->m_Event.native_handle(); });
+					std::ranges::transform(m_Clients, std::back_inserter(m_Handles), [](const FileSystemWatcher* const Client) { return Client->m_Event.native_handle(); });
 				}
 			}
 
 			const auto Result = os::handle::wait_any(m_Handles);
 
 			if (Result == 0)
+			{
+				if (m_Exit)
+					return;
+
 				continue;
+			}
 
 			{
-				SCOPED_ACTION(std::lock_guard)(m_CS);
+				SCOPED_ACTION(std::scoped_lock)(m_CS);
 
 				m_Clients[Result - 1]->callback_notify();
 
@@ -136,12 +143,19 @@ private:
 		}
 	}
 
+	~background_watcher()
+	{
+		m_Exit = true;
+		m_Update.set();
+	}
+
 	os::critical_section m_CS;
 	os::event
 		m_Update{ os::event::type::automatic, os::event::state::nonsignaled },
 		m_UpdateDone{ os::event::type::automatic, os::event::state::nonsignaled };
 	std::vector<const FileSystemWatcher*> m_Clients;
 	std::vector<HANDLE> m_Handles{ m_Update.native_handle() };
+	std::atomic_bool m_Exit{};
 	os::thread m_Thread;
 };
 
@@ -159,17 +173,23 @@ static os::handle open(const string_view Directory)
 	);
 
 	if (!DirectoryHandle)
-		LOGWARNING(L"create_file({}): {}"sv, Directory, last_error());
+		LOGERROR(L"create_file({}): {}"sv, Directory, os::last_error());
 
 	return DirectoryHandle;
 }
 
 FileSystemWatcher::FileSystemWatcher(const string_view EventId, const string_view Directory, const bool WatchSubtree):
 	m_EventId(EventId),
-	m_Directory(NTPath(Directory)),
+	m_Directory(nt_path(Directory)),
 	m_WatchSubtree(WatchSubtree),
 	m_DirectoryHandle(open(m_Directory))
 {
+	if (!m_DirectoryHandle)
+	{
+		LOGWARNING(L"Skip monitoring of {}"sv, Directory);
+		return;
+	}
+
 	m_Overlapped.hEvent = m_Event.native_handle();
 	read_async();
 
@@ -179,6 +199,9 @@ FileSystemWatcher::FileSystemWatcher(const string_view EventId, const string_vie
 
 FileSystemWatcher::~FileSystemWatcher()
 {
+	if (!m_DirectoryHandle)
+		return;
+
 	LOGDEBUG(L"Stop monitoring {}"sv, m_Directory);
 	background_watcher::instance().remove(this);
 }
@@ -203,7 +226,7 @@ void FileSystemWatcher::read_async() const
 		{}
 	))
 	{
-		LOGWARNING(L"ReadDirectoryChangesW({}): {}"sv, m_Directory, last_error());
+		LOGERROR(L"ReadDirectoryChangesW({}): {}"sv, m_Directory, os::last_error());
 	}
 }
 
@@ -211,7 +234,7 @@ void FileSystemWatcher::callback_notify() const
 {
 	if (DWORD BytesReturned = 0; !GetOverlappedResult(m_DirectoryHandle.native_handle(), &m_Overlapped, &BytesReturned, false))
 	{
-		const auto LastError = last_error();
+		const auto LastError = os::last_error();
 		if (!(LastError.Win32Error == ERROR_ACCESS_DENIED && LastError.NtError == STATUS_DELETE_PENDING))
 		{
 			LOGWARNING(L"GetOverlappedResult({}): {}"sv, m_Directory, LastError);

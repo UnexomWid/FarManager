@@ -44,7 +44,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Platform:
 
 // Common:
-#include "common/range.hpp"
 
 // External:
 
@@ -78,7 +77,6 @@ enum DIALOG_MODES
 	DMODE_NEEDUPDATE            = 24_bit, // необходимо обновить весь диалог?
 	DMODE_VISIBLE               = 25_bit, // отображать диалог на экране (DM_SHOWDIALOG)
 	DMODE_KEEPCONSOLETITLE      = 28_bit, // не изменять заголовок консоли
-	DMODE_CLICKOUTSIDE          = 29_bit, // было нажатие мыши вне диалога?
 	DMODE_OLDSTYLE              = 31_bit, // Диалог в старом (до 1.70) стиле
 };
 
@@ -121,7 +119,7 @@ struct DialogItemEx: public FarDialogItem
 };
 
 bool IsKeyHighlighted(string_view Str, int Key, bool Translate, wchar_t CharKey = {});
-void ItemsToItemsEx(span<const FarDialogItem> Items, span<DialogItemEx> ItemsEx, bool Short = false);
+void ItemsToItemsEx(std::span<const FarDialogItem> Items, std::span<DialogItemEx> ItemsEx, bool Short = false);
 
 
 struct InitDialogItem
@@ -136,7 +134,7 @@ struct InitDialogItem
 	string_view Data;
 };
 
-std::vector<DialogItemEx> MakeDialogItems(span<const InitDialogItem> Items);
+std::vector<DialogItemEx> MakeDialogItems(std::span<const InitDialogItem> Items);
 
 template<size_t Size, size_t N>
 std::vector<DialogItemEx> MakeDialogItems(InitDialogItem const (&Items)[N])
@@ -154,27 +152,19 @@ class Dialog;
 class Dialog: public window
 {
 protected:
-	struct private_tag {};
+	struct private_tag { explicit private_tag() = default; };
 
 public:
 	using dialog_handler = std::function<intptr_t(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2)>;
 
-	template<class T, class O>
-	static dialog_ptr create(T&& Src, intptr_t(O::*function)(Dialog*, intptr_t, intptr_t, void*), O* object, void* InitParam = nullptr)
-	{
-		auto Handler = (object && function)? [=](Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2) { return std::invoke(function, object, Dlg, Msg, Param1, Param2); } : dialog_handler();
-		return std::make_shared<Dialog>(private_tag(), span(Src), Handler, InitParam);
-	}
-
-	template<class T>
 	static dialog_ptr create(
-		T&& Src, const dialog_handler& handler = nullptr, void* InitParam = nullptr)
+		auto&& Src, const dialog_handler& handler = nullptr, void* InitParam = nullptr)
 	{
-		return std::make_shared<Dialog>(private_tag(), span(Src), handler, InitParam);
+		return std::make_shared<Dialog>(private_tag(), std::span(Src), handler, InitParam);
 	}
 
 	template<class T>
-	Dialog(private_tag, span<T> const Src, const dialog_handler& Handler, void* InitParam):
+	Dialog(private_tag, std::span<T> const Src, const dialog_handler& Handler, void* InitParam):
 		DataDialog(InitParam),
 		m_handler(Handler)
 	{
@@ -262,7 +252,7 @@ public:
 	};
 
 protected:
-	void InitDialogObjects(size_t ID = static_cast<size_t>(-1));
+	void InitDialogObjects(size_t ID = static_cast<size_t>(-1), bool ReInit = false);
 
 private:
 	friend class History;
@@ -274,8 +264,8 @@ private:
 	void AddToList();
 	void RemoveFromList();
 
-	void Construct(span<DialogItemEx> SrcItems);
-	void Construct(span<const FarDialogItem> SrcItems);
+	void Construct(std::span<DialogItemEx> SrcItems);
+	void Construct(std::span<const FarDialogItem> SrcItems);
 	void Init();
 	void DeleteDialogObjects();
 	int LenStrItem(size_t ID, string_view Str) const;
@@ -309,7 +299,7 @@ private:
 	bool Do_ProcessNextCtrl(bool Up, bool IsRedraw=true);
 	bool Do_ProcessFirstCtrl();
 	bool Do_ProcessSpace();
-	void SetComboBoxPos(DialogItemEx* Item=nullptr);
+	void SetComboBoxPos(DialogItemEx const* Item = nullptr);
 	rectangle CalcComboBoxPos(const DialogItemEx* CurItem, intptr_t ItemCount) const;
 	void ProcessKey(int Key, size_t ItemPos);
 	void ProcessDrag(const MOUSE_EVENT_RECORD *MouseEvent);
@@ -344,9 +334,23 @@ private:
 	bool IdExist{};
 	MOUSE_EVENT_RECORD PrevMouseRecord{};
 	string m_ConsoleTitle;
+	enum class centered: uint8_t
+	{
+		none         = 0,
+		horizontally = 0_bit,
+		vertically   = 1_bit,
+		both = horizontally | vertically,
+
+		is_bit_flags
+	}
+	m_Centered{centered::none};
 };
 
 // BUGBUG
 extern std::chrono::steady_clock::duration WaitUserTime;
+
+// Helper functions to abstract away a bit of Dialog madness
+string_view get_dialog_item_text(Dialog* Dlg, int Id);
+void set_dialog_item_text(Dialog* Dlg, int Id, string_view Text);
 
 #endif // DIALOG_HPP_7A9BE12B_EE5C_441F_84C9_64E9A63ABEFE

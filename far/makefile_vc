@@ -28,6 +28,9 @@
 #ENABLE_TESTS - Enable unit tests in Release mode (always enabled in Debug)
 #
 #DEFUSERFLAGS -
+#
+#PYTHON - use the python script for language files generation
+
 
 #include for user defines if needed
 !ifdef DEFFILE
@@ -44,6 +47,7 @@ ENABLE_TESTS=1
 
 !ifdef CLANG
 OUTDIR=$(OUTDIR).clang
+INTDIR=$(OUTDIR)/obj
 !endif
 
 FARINCLUDE=Include
@@ -51,9 +55,15 @@ FARINCLUDE=Include
 M4=tools\m4 -P -DFARBIT=$(DIRBIT) -DBUILD_TYPE=$(FARMANAGER_BUILD_TYPE) -DSCM_REVISION=$(FARMANAGER_SCM_REVISION)
 GAWK=tools\gawk
 
+!ifdef PYTHON
+LGEN=python.exe ..\misc\lng\lng.generator.py
+!else
+LGEN=tools\lng.generator.exe
+!endif
+
 BOOTSTRAPDIR=$(INTDIR)/include/bootstrap/
 
-DEPFILE=$(BOOTSTRAPDIR)far.vc.dep
+DEPFILE=$(BOOTSTRAPDIR)far.dep
 
 RES_FILE = "$(INTDIR)\far.res"
 
@@ -61,13 +71,16 @@ PCH_NAME = headers
 PCH_FILE = "$(INTDIR)\$(PCH_NAME).pch"
 
 LINK_OBJS = \
-	"$(INTDIR)\sqlite.obj" \
 	"$(INTDIR)\cache.obj" \
 	"$(INTDIR)\cddrv.obj" \
 	"$(INTDIR)\char_width.obj" \
 	"$(INTDIR)\clipboard.obj" \
 	"$(INTDIR)\cmdline.obj" \
+	"$(INTDIR)\codepage.obj" \
 	"$(INTDIR)\codepage_selection.obj" \
+	"$(INTDIR)\color_picker.obj" \
+	"$(INTDIR)\color_picker_256.obj" \
+	"$(INTDIR)\color_picker_rgb.obj" \
 	"$(INTDIR)\colormix.obj" \
 	"$(INTDIR)\common.tests.obj" \
 	"$(INTDIR)\components.obj" \
@@ -132,6 +145,7 @@ LINK_OBJS = \
 	"$(INTDIR)\hotplug.obj" \
 	"$(INTDIR)\imports.obj"\
 	"$(INTDIR)\infolist.obj" \
+	"$(INTDIR)\initguid.obj" \
 	"$(INTDIR)\interf.obj" \
 	"$(INTDIR)\keybar.obj" \
 	"$(INTDIR)\keyboard.obj" \
@@ -140,6 +154,7 @@ LINK_OBJS = \
 	"$(INTDIR)\lockscrn.obj" \
 	"$(INTDIR)\log.obj" \
 	"$(INTDIR)\macro.obj" \
+	"$(INTDIR)\macroapi.obj" \
 	"$(INTDIR)\main.obj" \
 	"$(INTDIR)\manager.obj" \
 	"$(INTDIR)\map_file.obj" \
@@ -161,6 +176,7 @@ LINK_OBJS = \
 	"$(INTDIR)\pipe.obj" \
 	"$(INTDIR)\platform.obj" \
 	"$(INTDIR)\platform.chrono.obj" \
+	"$(INTDIR)\platform.clipboard.obj" \
 	"$(INTDIR)\platform.com.obj" \
 	"$(INTDIR)\platform.concurrency.obj" \
 	"$(INTDIR)\platform.debug.obj" \
@@ -228,8 +244,7 @@ TEST_OBJS = "$(INTDIR)\api_test_c.testobj" "$(INTDIR)\api_test_c++.testobj"
 ADDINCLUDE=/I $(BOOTSTRAPDIR)..
 
 CPPFLAGS = $(CPPFLAGS) $(ADDINCLUDE)
-RFLAGS = $(RFLAGS) $(ADDINCLUDE) /fo"$(RES_FILE)"
-LINKFLAGS = $(LINKFLAGS) /out:"$(OUTDIR)\Far.exe"
+RFLAGS = $(RFLAGS) $(ADDINCLUDE)
 
 !ifdef ENABLE_TESTS
 CPPFLAGS = $(CPPFLAGS) /D "ENABLE_TESTS"
@@ -241,7 +256,7 @@ ALL: AllDirs lng depfile include docs $(TEST_OBJS)
 .PHONY: lng
 lng: $(BOOTSTRAPDIR)farlang.templ
 	@echo Generating language files
-	tools\lng.generator.exe -nc -i "$(BOOTSTRAPDIR)lang.ini" -oh "$(BOOTSTRAPDIR)" -ol "$(OUTDIR)" "$(BOOTSTRAPDIR)farlang.templ"
+	$(LGEN) -nc -i "$(BOOTSTRAPDIR)lang.ini" -oh "$(BOOTSTRAPDIR)" -ol "$(OUTDIR)" "$(BOOTSTRAPDIR)farlang.templ"
 
 .PHONY: depfile
 depfile:
@@ -286,21 +301,21 @@ AllDirs:
 	if not exist "$(INTDIR)\" mkdir "$(INTDIR)"
 	if not exist "$(BOOTSTRAPDIR)" mkdir "$(BOOTSTRAPDIR)"
 
-"$(OUTDIR)\Far.exe": $(PCH_FILE) $(LINK_OBJS) $(RES_FILE) $(BOOTSTRAPDIR)copyright.inc $(BOOTSTRAPDIR)farversion.inc
+"$(OUTDIR)\Far.exe": $(PCH_FILE) $(LINK_OBJS) $(RES_FILE) $(BOOTSTRAPDIR)copyright.inc $(BOOTSTRAPDIR)farversion.inc "$(OUTDIR)\sqlite3.dll"
 	@echo Linking $@
 !ifndef LINK_ULINK
 	$(LINK) @<<
-	$(LINKFLAGS) $(LINK_OBJS) $(RES_FILE) $(LINK_LIBS)
+	$(LINKFLAGS) /out:"$(OUTDIR)\Far.exe" $(LINK_OBJS) $(RES_FILE) $(LINK_LIBS) $(INTDIR)/sqlite3.lib
 <<
 !else
 	$(ULINK) +- @+<<
 	$(ULINKFLAGS) $(LINK_OBJS)
 	,"$(OUTDIR)\Far.exe","$(OUTDIR)\Far.map"
-	,$(LINK_LIBS)
-	,far.def,"$(RES_FILE)"
+	,$(LINK_LIBS) $(INTDIR)/sqlite3.lib
+	,,"$(RES_FILE)"
 <<
 !endif
-!if "$(BUILD_PLATFORM)" == "X86" || "$(BUILD_PLATFORM)" == "AMD64"
+!if ("$(BUILD_PLATFORM)" == "X86" || "$(BUILD_PLATFORM)" == "AMD64") && !defined(LINK_ULINK)
 	@echo Fixing subsystem version
 	editbin /nologo /subsystem:console,$(OS_VERSION) /osversion:$(OS_VERSION) $(OUTDIR)\Far.exe > $(INTDIR)\version_fix.log
 !endif
@@ -309,15 +324,52 @@ AllDirs:
 	$(OUTDIR)\Far.exe /service:test
 !endif
 
+LINK_SQLITE_OBJS = \
+	"$(INTDIR)\sqlite.obj" \
+	"$(INTDIR)\sqlite.res" \
+!ifndef LINK_ULINK
+!if "$(BUILD_PLATFORM)" == "X86" || "$(BUILD_PLATFORM)" == "AMD64"
+	"$(INTDIR)\vc_crt_fix.obj" \
+!endif
+	"$(INTDIR)\vc_crt_fix_impl.obj" \
+!else
+	"$(INTDIR)\vc_crt_fix_ulink.obj"
+!endif
+
+$(OUTDIR)\sqlite3.dll: $(LINK_SQLITE_OBJS)
+	@echo Linking $@
+!ifndef LINK_ULINK
+	$(LINK) @<<
+	$(LINKFLAGS) /dll /implib:$(INTDIR)/sqlite3.lib /out:"$@" $(LINK_SQLITE_OBJS)
+<<
+!else
+	$(ULINK) +- @+<<
+	$(ULINKFLAGS) -Tpd -Gic -ZI:$(INTDIR)/sqlite3.lib
+	,"$@","$(@R).map"
+	,$(LINK_SQLITE_OBJS)
+<<
+!endif
+
+$(INTDIR)\sqlite.res: thirdparty/sqlite/sqlite3.rc $(BOOTSTRAPDIR)sqlite_version.h
+	@echo sqlite3.rc
+	$(RC) $(RFLAGS) /fo"$@" thirdparty/sqlite/sqlite3.rc
+
+$(BOOTSTRAPDIR)sqlite_version.h:
+	@echo sqlite_version.h
+	$(GAWK) -f scripts/sqlite_version.awk -v target=$(BOOTSTRAPDIR)sqlite_version.h thirdparty/sqlite/sqlite3.h
+
 $(PCH_FILE): $(PCH_NAME).cpp $(PCH_NAME).hpp
 	@echo Making precompiled headers
 	$(CPP) $(CPPFLAGS) $(PCH_NAME).cpp /Yc$(PCH_NAME).hpp /Fp$(PCH_FILE)
 
-$(INTDIR)\vc_crt_fix_impl.obj: vc_crt_fix_impl.cpp
-	$(CPP) $(CPPFLAGS) /Zc:threadSafeInit- vc_crt_fix_impl.cpp
+$(INTDIR)\initguid.obj: $(@B).cpp
+	$(CPP) $(CPPFLAGS) $(@B).cpp
 
-$(INTDIR)\vc_crt_fix_ulink.obj: vc_crt_fix_ulink.cpp
-	$(CPP) $(CPPFLAGS) vc_crt_fix_ulink.cpp
+$(INTDIR)\vc_crt_fix_impl.obj: $(@B).cpp
+	$(CPP) $(CPPFLAGS) /Zc:threadSafeInit- $(@B).cpp
+
+$(INTDIR)\vc_crt_fix_ulink.obj: $(@B).cpp
+	$(CPP) $(CPPFLAGS) $(@B).cpp
 
 !ifdef NOBATCH
 .c{$(INTDIR)}.obj:
@@ -325,8 +377,8 @@ $(INTDIR)\vc_crt_fix_ulink.obj: vc_crt_fix_ulink.cpp
 !else
 .c{$(INTDIR)}.obj::
 !endif
-	$(CPP) @<<
-	$(CPPFLAGS) $<
+	$(CC) @<<
+	$(CFLAGS) $<
 <<
 
 !ifdef NOBATCH
@@ -345,7 +397,7 @@ $(INTDIR)\vc_crt_fix_ulink.obj: vc_crt_fix_ulink.cpp
 
 $(RES_FILE): far.rc $(BOOTSTRAPDIR)far.rc.inc $(BOOTSTRAPDIR)Far.exe.manifest Far.ico Far.red.ico Far.black.ico Far.hack.ico Far.mono.ico Far.msg.ico
 	@echo far.rc
-	$(RC) $(RFLAGS) far.rc
+	$(RC) $(RFLAGS) /fo"$(RES_FILE)" far.rc
 
 !ifdef USEDEPS
 !include "$(DEPFILE)"
@@ -353,7 +405,7 @@ $(RES_FILE): far.rc $(BOOTSTRAPDIR)far.rc.inc $(BOOTSTRAPDIR)Far.exe.manifest Fa
 
 $(INTDIR)\api_test_c.testobj: $(FARINCLUDE)/plugin.hpp $(FARINCLUDE)/farcolor.hpp api_test.c
 	@echo Testing C plugin API
-	$(CPP) /nologo /c /Fo"$@" /TC api_test.c
+	$(CC) /nologo /c /Fo"$@" /TC api_test.c
 
 $(INTDIR)\api_test_c++.testobj: $(FARINCLUDE)/plugin.hpp $(FARINCLUDE)/farcolor.hpp api_test.c
 	@echo Testing C++ plugin API
@@ -361,7 +413,7 @@ $(INTDIR)\api_test_c++.testobj: $(FARINCLUDE)/plugin.hpp $(FARINCLUDE)/farcolor.
 
 MSG=@echo Generating $@
 
-VERSION_DEPS=farversion.m4 tools.m4 vbuild.m4
+VERSION_DEPS=farversion.m4 vbuild.m4
 
 $(BOOTSTRAPDIR)Far.exe.manifest \
 $(BOOTSTRAPDIR)copyright.inc \
@@ -404,10 +456,11 @@ CLEAN:
 	"$(CODDIR)"\
 	"$(INTDIR)"\
 	"$(OUTDIR)\Far.exe"\
-	"$(OUTDIR)\Far.exp"\
-	"$(OUTDIR)\Far.lib"\
 	"$(OUTDIR)\Far.map"\
 	"$(OUTDIR)\Far.pdb"\
+	"$(OUTDIR)\sqlite3.dll"\
+	"$(OUTDIR)\sqlite3.map"\
+	"$(OUTDIR)\sqlite3.pdb"\
 	"$(OUTDIR)\*.hlf"\
 	"$(OUTDIR)\*.lng"\
 	"$(OUTDIR)\File_id.diz"\
@@ -426,7 +479,7 @@ install: instdir
 	@copy /Y "$(FARINCLUDE)\*.hpp" "$(HPPINSTDIR)\" > nul
 	@copy /Y "$(FARINCLUDE)\..\..\plugins\common\unicode\DlgBuilder.hpp" "$(HPPINSTDIR)\" > nul
 	@copy /Y "$(FARINCLUDE)\*.pas" "$(PASINSTDIR)\" > nul
-	for %%i in (changelog "$(OUTDIR)\Far.*" "$(OUTDIR)\*.lng" "$(OUTDIR)\File_id.diz" "$(OUTDIR)\*.hlf" "$(OUTDIR)\Far.exe.example.ini") do @copy /Y %%i "$(INSTALLDIR)\" > nul
+	for %%i in (changelog "$(OUTDIR)\Far.*" "$(OUTDIR)\sqlite3.*" "$(OUTDIR)\*.lng" "$(OUTDIR)\File_id.diz" "$(OUTDIR)\*.hlf" "$(OUTDIR)\Far.exe.example.ini") do @copy /Y %%i "$(INSTALLDIR)\" > nul
 
 .PHONY: instdir
 instdir:

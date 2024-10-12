@@ -47,7 +47,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "interf.hpp"
 #include "dlgedit.hpp"
 #include "cvtname.hpp"
-#include "exception.hpp"
 #include "RegExp.hpp"
 #include "FarDlgBuilder.hpp"
 #include "config.hpp"
@@ -59,87 +58,156 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "copy_progress.hpp"
 #include "keyboard.hpp"
 #include "pathmix.hpp"
+#include "colormix.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.com.hpp"
 #include "platform.process.hpp"
 
 // Common:
+#include "common.hpp"
 #include "common/from_string.hpp"
 #include "common/function_ref.hpp"
+#include "common/view/enumerate.hpp"
 
 // External:
 #include "format.hpp"
 
 //----------------------------------------------------------------------------
 
-int GetSearchReplaceString(
-	bool IsReplaceMode,
-	string_view Title,
-	string_view SubTitle,
-	string& SearchStr,
-	string& ReplaceStr,
+namespace
+{
+	auto& GetShared(SearchReplaceDlgParams::SharedGroup Group)
+	{
+		static SearchReplaceDlgParams s_SharedParams[std::to_underlying(SearchReplaceDlgParams::SharedGroup::count)];
+		return s_SharedParams[std::to_underlying(Group)];
+	}
+
+	void SaveToShared(SearchReplaceDlgParams& SharedParams, const SearchReplaceDlgParams& ClientParams)
+	{
+		const auto SaveParam{ [](auto& SharedParam, const auto& ClientParam)
+		{
+			if (ClientParam.has_value())
+				SharedParam = ClientParam.value();
+		} };
+
+		SharedParams.SearchStr = ClientParams.SearchStr;
+		SaveParam(SharedParams.SearchBytes, ClientParams.SearchBytes);
+		SaveParam(SharedParams.ReplaceStr, ClientParams.ReplaceStr);
+		SaveParam(SharedParams.Hex, ClientParams.Hex);
+		SaveParam(SharedParams.CaseSensitive, ClientParams.CaseSensitive);
+		SaveParam(SharedParams.WholeWords, ClientParams.WholeWords);
+		SaveParam(SharedParams.Regex, ClientParams.Regex);
+		SaveParam(SharedParams.Fuzzy, ClientParams.Fuzzy);
+		SaveParam(SharedParams.PreserveStyle, ClientParams.PreserveStyle);
+	}
+}
+
+const SearchReplaceDlgParams& SearchReplaceDlgParams::GetShared(SearchReplaceDlgParams::SharedGroup Group)
+{
+	return ::GetShared(Group);
+}
+
+void SearchReplaceDlgParams::SaveToShared(SearchReplaceDlgParams::SharedGroup Group) const
+{
+	::SaveToShared(::GetShared(Group), *this);
+}
+
+void SearchReplaceDlgParams::SetSearchPattern(string_view TextString, string_view HexString, uintptr_t const CodePage)
+{
+	if (Hex.value_or(false))
+	{
+		SearchBytes = HexStringToBlob(ExtractHexString(HexString), 0);
+		SearchStr = BytesToString(*SearchBytes, CodePage);
+	}
+	else
+	{
+		SearchStr = TextString;
+		if (SearchBytes.has_value())
+			SearchBytes->clear();
+	}
+}
+
+SearchReplaceDlgResult GetSearchReplaceString(
+	SearchReplaceDlgProps Props,
+	SearchReplaceDlgParams& Params,
 	string_view TextHistoryName,
 	string_view ReplaceHistoryName,
-	search_case_fold* pCaseFold,
-	bool* pWholeWords,
-	bool* pReverse,
-	bool* pRegexp,
-	bool* pPreserveStyle,
+	uintptr_t CodePage,
 	string_view const HelpTopic,
-	bool HideAll,
 	const UUID* Id,
 	function_ref<string(bool)> const Picker)
 {
-	int Result = 0;
+	const auto HasHex{ Params.Hex.has_value() };
+	const auto HexVal{ Params.Hex.value_or(false) };
+	const auto RexVal{ Params.Regex.value_or(false) };
+	const auto HasStyle{ Props.ReplaceMode && Params.PreserveStyle.has_value() };
 
-	if (TextHistoryName.empty())
-		TextHistoryName = L"SearchText"sv;
+	string SearchForLabel{ msg(lng::MSearchReplaceSearchFor) };
+	if (HasHex) inplace::remove_highlight(SearchForLabel);
 
-	if (ReplaceHistoryName.empty())
-		ReplaceHistoryName = L"ReplaceText"sv;
+	const auto& DialogTitle{ msg(Props.ReplaceMode ? lng::MSearchReplaceReplaceTitle : lng::MSearchReplaceSearchTitle) };
+	const auto& TextLabel{ msg(lng::MSearchReplaceText) };
+	const auto& HexLabel{ msg(lng::MSearchReplaceHex) };
+	const auto& WordLabel{ msg(lng::MSearchReplacePickWord) };
+	const auto& SelectionLabel{ msg(lng::MSearchReplacePickSelection) };
 
-	if (Title.empty())
-		Title = msg(IsReplaceMode? lng::MEditReplaceTitle : lng::MEditSearchTitle);
+	const auto SearchForLabelW{ static_cast<int>(HiStrlen(SearchForLabel)) };
+	const auto TextLabelW{ static_cast<int>(HiStrlen(TextLabel) + 4) };
+	const auto HexLabelW{ static_cast<int>(HiStrlen(HexLabel) + 4) };
+	const auto WordLabelW{ static_cast<int>(HiStrlen(WordLabel) + 4) };
+	const auto SelectionLabelW{ static_cast<int>(HiStrlen(SelectionLabel) + 4) };
 
-	if (SubTitle.empty())
-		SubTitle = msg(lng::MEditSearchFor);
+	constexpr auto DlgWidth{ 76 };
+	constexpr auto VerticalMidline{ (DlgWidth - 1) / 2 };
+	constexpr auto HorizontalRadioGap{ 2 };
 
+	const auto SearchForX1{ 4 + 1 };                                        const auto SearchForX2{ SearchForX1 + SearchForLabelW };
 
-	auto CaseFold = pCaseFold? *pCaseFold : search_case_fold::icase;
-	bool WholeWords=pWholeWords?*pWholeWords:false;
-	bool Reverse=pReverse?*pReverse:false;
-	bool Regexp=pRegexp?*pRegexp:false;
-	bool PreserveStyle=pPreserveStyle?*pPreserveStyle:false;
+	const auto SelectionButtonX2{ DlgWidth - 4 - 1 };
+	const auto SelectionButtonX1{ SelectionButtonX2 - SelectionLabelW };
+	const auto WordButtonX2{ SelectionButtonX1 - 1 };
+	const auto WordButtonX1{ WordButtonX2 - WordLabelW };
 
-	const auto DlgWidth = 76;
-	const auto& WordLabel = msg(lng::MEditSearchPickWord);
-	const auto& SelectionLabel = msg(lng::MEditSearchPickSelection);
-	const auto WordButtonSize = HiStrlen(WordLabel) + 4;
-	const auto SelectionButtonSize = HiStrlen(SelectionLabel) + 4;
-	const auto SelectionButtonX2 = DlgWidth - 4 - 1;
-	const auto SelectionButtonX1 = static_cast<int>(SelectionButtonX2 - SelectionButtonSize);
-	const auto WordButtonX2 = SelectionButtonX1 - 1;
-	const auto WordButtonX1 = static_cast<int>(WordButtonX2 - WordButtonSize);
+	const auto TextRadioX1_{ SearchForX2 + HorizontalRadioGap };            const auto TextRadioX2_{ TextRadioX1_ + TextLabelW };
+	const auto HexRadioX1_{ TextRadioX2_ + HorizontalRadioGap };            const auto HexRadioX2_{ HexRadioX1_ + HexLabelW };
 
-	const auto YFix = IsReplaceMode? 0 : 2;
+	const auto SearchForRadioExtent_{ Picker ? WordButtonX1 - HorizontalRadioGap : DlgWidth - 4 - 1 };
+	const auto HexRadioOverage_{ std::max(HexRadioX2_ - SearchForRadioExtent_, 0) };
+
+	const auto TextRadioX1{ TextRadioX1_ - HexRadioOverage_ };              const auto TextRadioX2{ TextRadioX2_ - HexRadioOverage_ };
+	const auto HexRadioX1{ HexRadioX1_ - HexRadioOverage_ };                const auto HexRadioX2{ HexRadioX2_ - HexRadioOverage_ };
+
+	const auto YFix = Props.ReplaceMode ? 0 : 2;
+
+	const auto& ActionButtonLabel{ msg(
+		Props.ReplaceMode
+		? (Props.ShowButtonsPrevNext ? lng::MSearchReplaceReplaceNext : lng::MSearchReplaceReplace)
+		: (Props.ShowButtonsPrevNext ? lng::MSearchReplaceFindNext : lng::MSearchReplaceFind)) };
+	const auto& FindReplacePrevLabel{ msg(Props.ReplaceMode ? lng::MSearchReplaceReplacePrev : lng::MSearchReplaceFindPrev) };
 
 	enum item_id
 	{
 		dlg_border,
+		dlg_radio_text,
+		dlg_radio_hex,
 		dlg_button_word,
 		dlg_button_selection,
 		dlg_label_search,
-		dlg_edit_search,
+		dlg_edit_search_text,
+		dlg_edit_search_hex,
 		dlg_label_replace,
 		dlg_edit_replace,
 		dlg_separator_1,
 		dlg_checkbox_case,
 		dlg_checkbox_words,
-		dlg_checkbox_reverse,
+		dlg_checkbox_fuzzy,
 		dlg_checkbox_regex,
 		dlg_checkbox_style,
 		dlg_separator_2,
+		dlg_separator_half,
+		dlg_button_prev,
 		dlg_button_action,
 		dlg_button_all,
 		dlg_button_cancel,
@@ -147,81 +215,227 @@ int GetSearchReplaceString(
 		dlg_count
 	};
 
-	auto ReplaceDlg = MakeDialogItems<dlg_count>(
+	auto DlgItems = MakeDialogItems<dlg_count>(
 	{
-		{ DI_DOUBLEBOX, {{3,                 1      }, {DlgWidth-4,        12-YFix}}, DIF_NONE, Title },
-		{ DI_BUTTON,    {{WordButtonX1,      2      }, {WordButtonX2,      2      }}, DIF_BTNNOCLOSE, WordLabel },
-		{ DI_BUTTON,    {{SelectionButtonX1, 2      }, {SelectionButtonX2, 2      }}, DIF_BTNNOCLOSE, SelectionLabel },
-		{ DI_TEXT,      {{5,                 2      }, {0,                 2      }}, DIF_NONE, SubTitle },
-		{ DI_EDIT,      {{5,                 3      }, {70,                3      }}, DIF_FOCUS | DIF_USELASTHISTORY | DIF_HISTORY, SearchStr, },
-		{ DI_TEXT,      {{5,                 4      }, {0,                 4      }}, DIF_NONE, msg(lng::MEditReplaceWith), },
-		{ DI_EDIT,      {{5,                 5      }, {70,                5      }}, DIF_USELASTHISTORY | DIF_HISTORY, ReplaceStr, },
-		{ DI_TEXT,      {{-1,                6-YFix }, {0,                 6-YFix }}, DIF_SEPARATOR, },
-		{ DI_CHECKBOX,  {{5,                 7-YFix }, {0,                 7-YFix }}, DIF_3STATE, msg(lng::MEditSearchCase), },
-		{ DI_CHECKBOX,  {{5,                 8-YFix }, {0,                 8-YFix }}, DIF_NONE, msg(lng::MEditSearchWholeWords), },
-		{ DI_CHECKBOX,  {{5,                 9-YFix }, {0,                 9-YFix }}, DIF_NONE, msg(lng::MEditSearchReverse), },
-		{ DI_CHECKBOX,  {{40,                7-YFix }, {0,                 7-YFix }}, DIF_NONE, msg(lng::MEditSearchRegexp), },
-		{ DI_CHECKBOX,  {{40,                8-YFix }, {0,                 8-YFix }}, DIF_NONE, msg(lng::MEditSearchPreserveStyle), },
-		{ DI_TEXT,      {{-1,                10-YFix}, {0,                 10-YFix}}, DIF_SEPARATOR, },
-		{ DI_BUTTON,    {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, msg(IsReplaceMode? lng::MEditReplaceReplace : lng::MEditSearchSearch), },
-		{ DI_BUTTON,    {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP, msg(lng::MEditSearchAll), },
-		{ DI_BUTTON,    {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP, msg(lng::MEditSearchCancel), },
+		{ DI_DOUBLEBOX,   {{3,                 1      }, {DlgWidth-4,        12-YFix}}, DIF_NONE, DialogTitle, },
+		{ DI_RADIOBUTTON, {{TextRadioX1,       2      }, {TextRadioX2,       2      }}, DIF_GROUP, TextLabel, },
+		{ DI_RADIOBUTTON, {{HexRadioX1,        2      }, {HexRadioX2,        2      }}, DIF_NONE, HexLabel, },
+		{ DI_BUTTON,      {{WordButtonX1,      2      }, {WordButtonX2,      2      }}, DIF_BTNNOCLOSE, WordLabel },
+		{ DI_BUTTON,      {{SelectionButtonX1, 2      }, {SelectionButtonX2, 2      }}, DIF_BTNNOCLOSE, SelectionLabel },
+		{ DI_TEXT,        {{5,                 2      }, {0,                 2      }}, DIF_NONE, SearchForLabel },
+		{ DI_EDIT,        {{5,                 3      }, {DlgWidth-4-2,      3      }}, DIF_USELASTHISTORY | DIF_HISTORY | DIF_HOMEITEM, },
+		{ DI_FIXEDIT,     {{5,                 3      }, {DlgWidth-4-2,      3      }}, DIF_MASKEDIT | DIF_HOMEITEM, },
+		{ DI_TEXT,        {{5,                 4      }, {0,                 4      }}, DIF_NONE, msg(lng::MSearchReplaceReplaceWith), },
+		{ DI_EDIT,        {{5,                 5      }, {DlgWidth-4-2,      5      }}, DIF_USELASTHISTORY | DIF_HISTORY, },
+		{ DI_TEXT,        {{-1,                6-YFix }, {0,                 6-YFix }}, DIF_SEPARATOR, },
+		{ DI_CHECKBOX,    {{5,                 7-YFix }, {0,                 7-YFix }}, DIF_NONE, msg(lng::MSearchReplaceCase), },
+		{ DI_CHECKBOX,    {{5,                 8-YFix }, {0,                 8-YFix }}, DIF_NONE, msg(lng::MSearchReplaceWholeWords), },
+		{ DI_CHECKBOX,    {{5,                 9-YFix }, {0,                 9-YFix }}, DIF_NONE, msg(lng::MSearchReplaceFuzzy), },
+		{ DI_CHECKBOX,    {{VerticalMidline+2, 7-YFix }, {0,                 7-YFix }}, DIF_NONE, msg(lng::MSearchReplaceRegexp), },
+		{ DI_CHECKBOX,    {{VerticalMidline+2, 9-YFix }, {0,                 9-YFix }}, DIF_NONE, msg(lng::MSearchReplacePreserveStyle), },
+		{ DI_TEXT,        {{-1,                10-YFix}, {0,                 10-YFix}}, DIF_SEPARATOR, },
+		{ DI_TEXT,        {{VerticalMidline+2, 8-YFix }, {DlgWidth-6,        8-YFix }}, DIF_SEPARATORUSER, },
+		{ DI_BUTTON,      {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP, FindReplacePrevLabel, },
+		{ DI_BUTTON,      {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, ActionButtonLabel, },
+		{ DI_BUTTON,      {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP, msg(lng::MSearchReplaceAll), },
+		{ DI_BUTTON,      {{0,                 11-YFix}, {0,                 11-YFix}}, DIF_CENTERGROUP, msg(lng::MSearchReplaceCancel), },
 	});
 
-	ReplaceDlg[dlg_edit_search].strHistory = TextHistoryName;
-	ReplaceDlg[dlg_edit_replace].strHistory = ReplaceHistoryName;
-	ReplaceDlg[dlg_checkbox_case].Selected =
-		CaseFold == search_case_fold::exact? BSTATE_CHECKED :
-		CaseFold == search_case_fold::icase? BSTATE_UNCHECKED :
-		BSTATE_3STATE;
-	ReplaceDlg[dlg_checkbox_words].Selected = WholeWords;
-	ReplaceDlg[dlg_checkbox_reverse].Selected = Reverse;
-	ReplaceDlg[dlg_checkbox_regex].Selected = Regexp;
-	ReplaceDlg[dlg_checkbox_style].Selected = PreserveStyle;
+	const auto SetFlagIf{ [&](const item_id Item, const auto Flag, const bool Condition) { if (Condition) DlgItems[Item].Flags |= Flag; } };
+	const auto SetSelected{ [&](const item_id Item, const bool Selected) { DlgItems[Item].Selected = Selected; } };
+	const auto SetStringIf{ [&](const item_id Item, auto&& StringGetter, const bool Condition) { if (Condition) DlgItems[Item].strData = StringGetter(); }};
+	const auto SetHistory{ [&](const item_id Item, const string_view History) { DlgItems[Item].strHistory = History; } };
+	const auto SetMaskIf{ [&](const item_id Item, const bool Condition, string&& Mask) { if (Condition) DlgItems[Item].strMask = std::move(Mask); } };
 
+	// dlg_radio_text
+	SetFlagIf(dlg_radio_text, DIF_HIDDEN, !HasHex);
+	SetSelected(dlg_radio_text, !HexVal);
 
-	if (IsReplaceMode || HideAll)
-	{
-		ReplaceDlg[dlg_button_all].Flags |= DIF_HIDDEN;
-	}
+	// dlg_radio_hex
+	SetFlagIf(dlg_radio_hex, DIF_HIDDEN, !HasHex);
+	SetSelected(dlg_radio_hex, HexVal);
 
-	if (!IsReplaceMode)
-	{
-		ReplaceDlg[dlg_label_replace].Flags |= DIF_HIDDEN;
-		ReplaceDlg[dlg_edit_replace].Flags |= DIF_HIDDEN;
-		ReplaceDlg[dlg_checkbox_style].Flags |= DIF_HIDDEN;
-	}
+	// dlg_button_word
+	SetFlagIf(dlg_button_word, DIF_HIDDEN, !Picker);
+	SetFlagIf(dlg_button_word, DIF_DISABLE, HexVal);
 
-	if (!Picker)
-	{
-		ReplaceDlg[dlg_button_word].Flags |= DIF_HIDDEN;
-		ReplaceDlg[dlg_button_selection].Flags |= DIF_HIDDEN;
-	}
+	// dlg_button_selection
+	SetFlagIf(dlg_button_selection, DIF_HIDDEN, !Picker);
+	SetFlagIf(dlg_button_selection, DIF_DISABLE, HexVal);
 
-	if (!pCaseFold)
-		ReplaceDlg[dlg_checkbox_case].Flags |= DIF_DISABLE; // DIF_HIDDEN ??
-	if (!pWholeWords)
-		ReplaceDlg[dlg_checkbox_words].Flags |= DIF_DISABLE; // DIF_HIDDEN ??
-	if (!pReverse)
-		ReplaceDlg[dlg_checkbox_reverse].Flags |= DIF_DISABLE; // DIF_HIDDEN ??
-	if (!pRegexp)
-		ReplaceDlg[dlg_checkbox_regex].Flags |= DIF_DISABLE; // DIF_HIDDEN ??
-	if (!pPreserveStyle)
-		ReplaceDlg[dlg_checkbox_style].Flags |= DIF_DISABLE; // DIF_HIDDEN ??
+	// dlg_edit_search_text
+	SetFlagIf(dlg_edit_search_text, DIF_HIDDEN, HexVal);
+	SetFlagIf(dlg_edit_search_text, DIF_FOCUS, !HexVal);
+	SetStringIf(dlg_edit_search_text, [&] { return Params.SearchStr; }, !HexVal);
+	SetHistory(dlg_edit_search_text, TextHistoryName);
+
+	// dlg_edit_search_hex
+	SetFlagIf(dlg_edit_search_hex, DIF_HIDDEN, !HexVal);
+	SetFlagIf(dlg_edit_search_hex, DIF_FOCUS, HexVal);
+	SetStringIf(dlg_edit_search_hex, [&] { return BlobToHexString(Params.SearchBytes.value(), 0); }, HexVal);
+	SetMaskIf(dlg_edit_search_hex, HasHex, HexMask(64));
+
+	// dlg_label_replace
+	SetFlagIf(dlg_label_replace, DIF_HIDDEN, !Props.ReplaceMode);
+
+	// dlg_edit_replace
+	SetFlagIf(dlg_edit_replace, DIF_HIDDEN, !Props.ReplaceMode);
+	SetStringIf(dlg_edit_replace, [&] { return Params.ReplaceStr.value(); }, Props.ReplaceMode);
+	SetHistory(dlg_edit_replace, ReplaceHistoryName);
+
+	// dlg_checkbox_case
+	SetFlagIf(dlg_checkbox_case, DIF_DISABLE, !Params.CaseSensitive.has_value() || HexVal);
+	SetSelected(dlg_checkbox_case, Params.CaseSensitive.value_or(false));
+
+	// dlg_checkbox_words
+	SetFlagIf(dlg_checkbox_words, DIF_DISABLE, !Params.WholeWords.has_value() || HexVal);
+	SetSelected(dlg_checkbox_words, Params.WholeWords.value_or(false));
+
+	// dlg_checkbox_regex
+	SetFlagIf(dlg_checkbox_regex, DIF_DISABLE, !Params.Regex.has_value() || HexVal);
+	SetSelected(dlg_checkbox_regex, Params.Regex.value_or(false));
+
+	// dlg_checkbox_fuzzy
+	SetFlagIf(dlg_checkbox_fuzzy, DIF_DISABLE, !Params.Fuzzy.has_value() || HexVal || RexVal);
+	SetSelected(dlg_checkbox_fuzzy, Params.Fuzzy.value_or(false));
+
+	// dlg_checkbox_style
+	SetFlagIf(dlg_checkbox_style, DIF_HIDDEN, !HasStyle);
+	SetSelected(dlg_checkbox_style, Params.PreserveStyle.value_or(false));
+
+	// dlg_separator_half
+	SetFlagIf(dlg_separator_half, DIF_HIDDEN, !HasStyle);
+	SetMaskIf(dlg_separator_half, HasStyle, { BoxSymbols[BS_H1], BoxSymbols[BS_H1], BoxSymbols[BS_H1] });
+
+	// dlg_button_find_prev == dlg_button_replace_prev
+	SetFlagIf(dlg_button_prev, DIF_HIDDEN, !Props.ShowButtonsPrevNext);
+
+	// dlg_button_all
+	SetFlagIf(dlg_button_all, DIF_HIDDEN, !Props.ShowButtonAll);
+
+	bool TextOrHexHotkeyUsed{};
+	bool SearchStringWasEmpty{};
 
 	const auto Handler = [&](Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2) -> intptr_t
 	{
-		if (Msg == DN_BTNCLICK && Picker && (Param1 == dlg_button_word || Param1 == dlg_button_selection))
+		const auto EnableActionButtons{ [&](const bool Init)
 		{
-			// BUGBUG: #0003136: DM_INSERTTEXT or something like that
-			static_cast<DlgEdit*>(Dlg->GetAllItem()[dlg_edit_search].ObjPtr)->InsertString(Picker(Param1 == dlg_button_selection));
-			Dlg->SendMessage(DM_SETFOCUS, dlg_edit_search, nullptr);
-			return TRUE;
+			const auto Str{ get_dialog_item_text(Dlg, Param1) };
+			const auto Empty{ Param1 == dlg_edit_search_text ? Str.empty() : HexStringToBlob(ExtractHexString(Str), 0).empty() };
+
+			// 2023-05-29 MZK: If DN_EDITCHANGE comes because of changing items in the autocomplete list (Up, Down, Mouse),
+			// and we send DM_ENABLE to dialog buttons, the dialog is refreshed but the autocomplete list is not, see gh-697.
+			// As the result, the list disappears from the screen but still has focus. Seems to be a bug in the autocomplete list.
+			// To work around this issue, the code below avoids sending DM_ENABLE if the "empty" status did not change.
+			// It works because while the autocomplete list is open, the Search string never becomes empty,
+			// so we never send DM_ENABLE thus dodging the whole problem.
+			if (Init || Empty != SearchStringWasEmpty)
+			{
+				SearchStringWasEmpty = Empty;
+				SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
+				for (auto Item : { dlg_button_prev, dlg_button_action, dlg_button_all })
+					Dlg->SendMessage(DM_ENABLE, Item, ToPtr(!Empty));
+			}
+		} };
+
+		switch (Msg)
+		{
+		case DN_INITDIALOG:
+			EnableActionButtons(true);
+			break;
+
+		case DN_BTNCLICK:
+			switch (Param1)
+			{
+			case dlg_radio_text:
+			case dlg_radio_hex:
+				{
+					if (!Param2) break;
+
+					SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
+
+					const auto OldHex{ !!Dlg->SendMessage(DM_SHOWITEM, dlg_edit_search_hex, ToPtr(-1)) };
+					const auto NewHex{ Param1 == dlg_radio_hex };
+					const auto OldEdit{ OldHex ? dlg_edit_search_hex : dlg_edit_search_text };
+					const auto NewEdit{ NewHex ? dlg_edit_search_hex : dlg_edit_search_text };
+
+					if (NewHex != OldHex)
+					{
+						const auto NewStr = ConvertHexString(get_dialog_item_text(Dlg, OldEdit), CodePage, !NewHex);
+						set_dialog_item_text(Dlg, NewEdit, NewStr);
+
+						if (!NewStr.empty())
+						{
+							const auto Unchanged{ static_cast<int>(Dlg->SendMessage(DM_EDITUNCHANGEDFLAG, OldEdit, ToPtr(-1))) };
+							Dlg->SendMessage(DM_EDITUNCHANGEDFLAG, NewEdit, ToPtr(Unchanged));
+						}
+						Dlg->SendMessage(DM_SHOWITEM, OldEdit, ToPtr(false));
+						Dlg->SendMessage(DM_SHOWITEM, NewEdit, ToPtr(true));
+
+						const auto Rex{ Dlg->SendMessage(DM_GETCHECK, dlg_checkbox_regex, nullptr) == BSTATE_CHECKED };
+						Dlg->SendMessage(DM_ENABLE, dlg_button_word, ToPtr(!NewHex));
+						Dlg->SendMessage(DM_ENABLE, dlg_button_selection, ToPtr(!NewHex));
+						Dlg->SendMessage(DM_ENABLE, dlg_checkbox_case, ToPtr(Params.CaseSensitive.has_value() && !NewHex));
+						Dlg->SendMessage(DM_ENABLE, dlg_checkbox_words, ToPtr(Params.WholeWords.has_value() && !NewHex));
+						Dlg->SendMessage(DM_ENABLE, dlg_checkbox_regex, ToPtr(Params.Regex.has_value() && !NewHex));
+						Dlg->SendMessage(DM_ENABLE, dlg_checkbox_fuzzy, ToPtr(Params.Fuzzy.has_value() && !NewHex && !Rex));
+					}
+
+					if (TextOrHexHotkeyUsed)
+					{
+						TextOrHexHotkeyUsed = false;
+						Dlg->SendMessage(DM_SETFOCUS, NewEdit, nullptr);
+					}
+				}
+				break;
+
+			case dlg_button_word:
+			case dlg_button_selection:
+				{
+					if (!Picker) break;
+
+					// BUGBUG: #0003136: DM_INSERTTEXT or something like that
+					static_cast<DlgEdit*>(Dlg->GetAllItem()[dlg_edit_search_text].ObjPtr)->InsertString(Picker(Param1 == dlg_button_selection));
+					Dlg->SendMessage(DM_SETFOCUS, dlg_edit_search_text, nullptr);
+				}
+				return TRUE;
+
+			case dlg_checkbox_regex:
+				{
+					SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
+
+					const auto Hex{ !!Dlg->SendMessage(DM_SHOWITEM, dlg_edit_search_hex, ToPtr(-1)) };
+					const auto Rex{ Dlg->SendMessage(DM_GETCHECK, dlg_checkbox_regex, nullptr) == BSTATE_CHECKED };
+					Dlg->SendMessage(DM_ENABLE, dlg_checkbox_words, ToPtr(Params.WholeWords.has_value() && !Hex));
+					Dlg->SendMessage(DM_ENABLE, dlg_checkbox_fuzzy, ToPtr(Params.Fuzzy.has_value() && !Hex && !Rex));
+				}
+				break;
+			}
+			break;
+
+		case DN_HOTKEY:
+			{
+				TextOrHexHotkeyUsed = Param1 == dlg_radio_text || Param1 == dlg_radio_hex;
+			}
+			break;
+
+		case DN_EDITCHANGE:
+			switch (Param1)
+			{
+			case dlg_edit_search_text:
+			case dlg_edit_search_hex:
+				{
+					EnableActionButtons(false);
+					break;
+				}
+			}
+			break;
 		}
+
 		return Dlg->DefProc(Msg, Param1, Param2);
 	};
 
-	const auto Dlg = Dialog::create(ReplaceDlg, Handler);
+	const auto Dlg = Dialog::create(DlgItems, Handler);
 	Dlg->SetPosition({ -1, -1, DlgWidth, 14 - YFix });
 
 	if (!HelpTopic.empty())
@@ -233,33 +447,40 @@ int GetSearchReplaceString(
 	Dlg->Process();
 
 	const auto ExitCode = Dlg->GetExitCode();
-	if(ExitCode == dlg_button_action || ExitCode == dlg_button_all)
+
+	if (ExitCode == dlg_button_cancel || ExitCode < 0)
 	{
-		Result = ExitCode == dlg_button_action ? 1 : 2;
-		SearchStr = ReplaceDlg[dlg_edit_search].strData;
-		ReplaceStr = ReplaceDlg[dlg_edit_replace].strData;
-		CaseFold =
-			ReplaceDlg[dlg_checkbox_case].Selected == BSTATE_CHECKED? search_case_fold::exact :
-			ReplaceDlg[dlg_checkbox_case].Selected == BSTATE_UNCHECKED? search_case_fold::icase :
-			search_case_fold::fuzzy;
-		WholeWords=ReplaceDlg[dlg_checkbox_words].Selected == BSTATE_CHECKED;
-		Reverse=ReplaceDlg[dlg_checkbox_reverse].Selected == BSTATE_CHECKED;
-		Regexp=ReplaceDlg[dlg_checkbox_regex].Selected == BSTATE_CHECKED;
-		PreserveStyle=ReplaceDlg[dlg_checkbox_style].Selected == BSTATE_CHECKED;
+		return SearchReplaceDlgResult::Cancel;
 	}
 
-	if (pCaseFold)
-		*pCaseFold = CaseFold;
-	if (pWholeWords)
-		*pWholeWords=WholeWords;
-	if (pReverse)
-		*pReverse=Reverse;
-	if (pRegexp)
-		*pRegexp=Regexp;
-	if (pPreserveStyle)
-		*pPreserveStyle=PreserveStyle;
+	const auto SaveParam{ [&](auto& Param, const item_id ItemId)
+	{
+		if (Param.has_value())
+			Param = DlgItems[ItemId].Selected == BSTATE_CHECKED;
+	} };
 
-	return Result;
+	SaveParam(Params.Hex, dlg_radio_hex);
+	SaveParam(Params.CaseSensitive, dlg_checkbox_case);
+	SaveParam(Params.WholeWords, dlg_checkbox_words);
+	SaveParam(Params.Regex, dlg_checkbox_regex);
+	SaveParam(Params.Fuzzy, dlg_checkbox_fuzzy);
+	SaveParam(Params.PreserveStyle, dlg_checkbox_style);
+
+	Params.SetSearchPattern(DlgItems[dlg_edit_search_text].strData, DlgItems[dlg_edit_search_hex].strData, CodePage);
+
+	if (Props.ReplaceMode)
+	{
+		Params.ReplaceStr = DlgItems[dlg_edit_replace].strData;
+	}
+
+	switch (ExitCode)
+	{
+	case dlg_button_action: return Props.ShowButtonsPrevNext ? SearchReplaceDlgResult::Next : SearchReplaceDlgResult::Ok;
+	case dlg_button_prev:   return SearchReplaceDlgResult::Prev;
+	case dlg_button_all:    return SearchReplaceDlgResult::All;
+	default:
+		std::unreachable();
+	}
 }
 
 bool GetString(
@@ -367,7 +588,7 @@ bool GetString(
 		StrDlg[gs_edit].strData = SrcText;
 
 	{
-		const auto Dlg = Dialog::create(span(StrDlg.data(), StrDlg.size() - Substract));
+		const auto Dlg = Dialog::create(std::span(StrDlg.data(), StrDlg.size() - Substract));
 		Dlg->SetPosition({ -1, -1, 76, offset + (Flags & FIB_BUTTONS? 8 : 6) });
 		if(Id) Dlg->SetId(*Id);
 
@@ -480,8 +701,8 @@ static string format_process_name(DWORD const Pid, string_view const ImageName, 
 		HaveAppHame = AppName && *AppName,
 		HaveServiceName = ServiceShortName && *ServiceShortName;
 
-	return format(
-		FSTR(L"{} (PID {}{}{}{}{}{})"sv),
+	return far::format(
+		L"{} (PID {}{}{}{}{}{})"sv,
 		!ImageName.empty()? ImageName : L"Unknown"sv,
 		Pid,
 		HaveAppHame? L", "sv : L""sv,
@@ -504,7 +725,7 @@ static std::vector<string> get_locking_processes(const string& FullName, size_t 
 		if (!Enum)
 		{
 			Enum.emplace();
-			std::transform(ALL_CONST_RANGE(*Enum), std::inserter(ActiveProcesses, ActiveProcesses.end()), [](os::process::enum_process_entry const& Entry)
+			std::ranges::transform(*Enum, std::inserter(ActiveProcesses, ActiveProcesses.end()), [](os::process::enum_process_entry const& Entry)
 			{
 				return std::pair(Entry.Pid, Entry.Name);
 			});
@@ -621,10 +842,10 @@ operation OperationFailed(const error_state_ex& ErrorState, string_view const Ob
 
 			if (ProcessCount > MaxProcesses)
 			{
-				Msg.emplace_back(format(msg(lng::MObjectLockedAndMore), ProcessCount - MaxProcesses));
+				Msg.emplace_back(far::vformat(msg(lng::MObjectLockedAndMore), ProcessCount - MaxProcesses));
 			}
 
-			static const std::pair<DWORD, lng> Mappings[] =
+			static const std::pair<DWORD, lng> Mappings[]
 			{
 				// We don't handle RmRebootReasonPermissionDenied here as we don't try to close anything.
 				{RmRebootReasonSessionMismatch, lng::MObjectLockedReasonSessionMismatch },
@@ -654,8 +875,8 @@ operation OperationFailed(const error_state_ex& ErrorState, string_view const Ob
 	std::vector Msgs{std::move(Description), QuoteOuterSpace(Object)};
 	if(!Msg.empty())
 	{
-		Msgs.emplace_back(format(msg(lng::MObjectLockedReason), msg(Reason)));
-		std::move(ALL_RANGE(Msg), std::back_inserter(Msgs));
+		Msgs.emplace_back(far::vformat(msg(lng::MObjectLockedReason), msg(Reason)));
+		std::ranges::move(Msg, std::back_inserter(Msgs));
 		Msg.clear();
 	}
 
@@ -679,7 +900,7 @@ operation OperationFailed(const error_state_ex& ErrorState, string_view const Ob
 	std::optional<listener> Listener;
 	if (SwitchBtn)
 	{
-		Listener.emplace([](const std::any& Payload)
+		Listener.emplace(listener::scope{L"SwitchToLockedFile"sv}, [](const std::any& Payload)
 		{
 			// Switch asynchronously after the message is reopened,
 			// otherwise Far will lose the focus too early
@@ -741,7 +962,7 @@ bool retryable_ui_operation(function_ref<bool()> const Action, string_view const
 {
 	while (!Action())
 	{
-		switch (const auto ErrorState = last_error(); SkipErrors? operation::skip_all : OperationFailed(ErrorState, Name, lng::MError, msg(ErrorDescription)))
+		switch (const auto ErrorState = os::last_error(); SkipErrors? operation::skip_all : OperationFailed(ErrorState, Name, lng::MError, msg(ErrorDescription)))
 		{
 		case operation::retry:
 			continue;
@@ -812,22 +1033,22 @@ static void GetRowCol(const string_view Str, bool Hex, goto_coord& Row, goto_coo
 		auto Radix = 0;
 
 		// он умный - hex код ввел!
-		if (starts_with(Part, L"0x"sv))
+		if (Part.starts_with(L"0x"sv))
 		{
 			Part.remove_prefix(2);
 			Radix = 16;
 		}
-		else if (starts_with(Part, L"$"sv))
+		else if (Part.starts_with(L"$"sv))
 		{
 			Part.remove_prefix(1);
 			Radix = 16;
 		}
-		else if (ends_with(Part, L"h"sv))
+		else if (Part.ends_with(L"h"sv))
 		{
 			Part.remove_suffix(1);
 			Radix = 16;
 		}
-		else if (ends_with(Part, L"m"sv))
+		else if (Part.ends_with(L"m"sv))
 		{
 			Part.remove_suffix(1);
 			Radix = 10;
@@ -878,7 +1099,7 @@ bool GoToRowCol(goto_coord& Row, goto_coord& Col, bool& Hex, string_view const H
 		GetRowCol(strData, Hex, Row, Col);
 		return true;
 	}
-	catch (const std::exception& e)
+	catch (std::exception const& e)
 	{
 		LOGWARNING(L"{}"sv, e);
 		// maybe we need to display a message in case of an incorrect input
@@ -930,13 +1151,244 @@ bool RetryAbort(std::vector<string>&& Messages)
 	});
 }
 
+void regex_playground()
+{
+	enum
+	{
+		rp_doublebox,
+		rp_text_regex,
+		rp_edit_regex,
+		rp_text_cursor,
+		rp_text_test,
+		rp_edit_test,
+		rp_text_substitution,
+		rp_edit_substitution,
+		rp_text_result,
+		rp_edit_result,
+		rp_list_matches,
+		rp_text_status,
+		rp_edit_status,
+		rp_separator,
+		rp_button_ok,
+
+		rp_count
+	};
+
+	auto RegexDlgItems = MakeDialogItems<rp_count>(
+	{
+		{ DI_DOUBLEBOX, {{3,  1}, {72,15}}, DIF_NONE, L"Regular expressions", },
+		{ DI_TEXT,      {{5,  2}, {0,  2}}, DIF_NONE, L"Regex:" },
+		{ DI_EDIT,      {{5,  3}, {45, 3}}, DIF_HISTORY, },
+		{ DI_TEXT,      {{5,  4}, {45, 4}}, DIF_NONE, L"" },
+		{ DI_TEXT,      {{5,  5}, {0,  5}}, DIF_NONE, L"Test string:" },
+		{ DI_EDIT,      {{5,  6}, {45, 6}}, DIF_HISTORY, },
+		{ DI_TEXT,      {{5,  7}, {0,  7}}, DIF_NONE, L"Substitution:" },
+		{ DI_EDIT,      {{5,  8}, {45, 8}}, DIF_HISTORY, },
+		{ DI_TEXT,      {{5,  9}, {0,  9}}, DIF_NONE, L"Result:" },
+		{ DI_EDIT,      {{5, 10}, {45,10}}, DIF_READONLY, },
+		{ DI_LISTBOX,   {{47, 2}, {70,11}}, DIF_NONE, L"Matches" },
+		{ DI_TEXT,      {{5, 11}, {0, 11}}, DIF_NONE, L"Status:" },
+		{ DI_EDIT,      {{5, 12}, {70,12}}, DIF_READONLY, },
+		{ DI_TEXT,      {{-1,13}, {0, 13}}, DIF_SEPARATOR, },
+		{ DI_BUTTON,    {{0, 14}, {0, 14}}, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, msg(lng::MOk), },
+	});
+
+	RegexDlgItems[rp_edit_regex].strHistory = L"RegexTestRegex"sv;
+	RegexDlgItems[rp_edit_test].strHistory = L"RegexTestTest"sv;
+	RegexDlgItems[rp_edit_substitution].strHistory = L"RegexTestSubstitution"sv;
+
+	RegExp Regex;
+	regex_match Match;
+	named_regex_match NamedMatch;
+
+	std::vector<string> ListStrings;
+	std::vector<FarListItem> ListItems;
+
+	enum class status
+	{
+		normal,
+		warning,
+		error
+	}
+	Status{};
+
+	const auto status_to_color = [&]
+	{
+		switch (Status)
+		{
+		case status::normal:  return F_LIGHTGREEN;
+		case status::warning: return F_YELLOW;
+		case status::error:   return F_LIGHTRED;
+		default:
+			std::unreachable();
+		}
+	};
+
+	const auto RegexDlg = Dialog::create(RegexDlgItems, [&](Dialog* const Dlg, intptr_t const Msg, intptr_t const Param1, void* const Param2)
+	{
+		const auto update_substitution = [&]
+		{
+			const auto TestStr = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, rp_edit_test, {}));
+			const auto ReplaceStr = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, rp_edit_substitution, {}));
+
+			const auto Str = ReplaceBrackets(TestStr, ReplaceStr, Match.Matches, &NamedMatch);
+			Status = status::normal;
+			Dlg->SendMessage(DM_SETTEXTPTR, rp_edit_result, UNSAFE_CSTR(Str));
+		};
+
+		const auto update_matches = [&]
+		{
+			FarList List{ sizeof(List), ListItems.size(), ListItems.data() };
+			Dlg->SendMessage(DM_LISTSET, rp_list_matches, &List);
+		};
+
+		const auto clear_matches = [&]
+		{
+			Match.Matches.clear();
+			NamedMatch.Matches.clear();
+			ListItems.clear();
+
+			update_matches();
+		};
+
+		const auto update_cursor = [&](std::optional<size_t> const& Position = {})
+		{
+			Dlg->SendMessage(DM_SETTEXTPTR, rp_text_cursor, Position? UNSAFE_CSTR(string(*Position, L' ') + L'↑') : nullptr);
+		};
+
+		const auto update_status = [&](status const NewStatus, string const& Message)
+		{
+			Status = NewStatus;
+			Dlg->SendMessage(DM_SETTEXTPTR, rp_edit_status, UNSAFE_CSTR(Message));
+		};
+
+		const auto update_test = [&]
+		{
+			string_view const TestStr = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, rp_edit_test, {}));
+
+			bool IsMatch;
+
+			try
+			{
+				IsMatch = Regex.Search(TestStr, Match, &NamedMatch);
+			}
+			catch (regex_exception const& e)
+			{
+				clear_matches();
+				update_cursor(e.position());
+				update_status(status::error, e.message());
+				return false;
+			}
+
+			if (!IsMatch)
+			{
+				clear_matches();
+				update_status(status::warning, L"Not found"s);
+				return false;
+			}
+
+			update_status(status::normal, L"Found"s);
+
+			ListItems.clear();
+			ListStrings.clear();
+
+			reserve_exp(ListItems, Match.Matches.size());
+			reserve_exp(ListStrings, Match.Matches.size());
+
+			const auto match_str = [&](RegExpMatch const& m)
+			{
+				return m.start < 0? L""s : far::format(L"{}-{} {}"sv, m.start, m.end, get_match(TestStr, m));
+			};
+
+			for (const auto& [i, Index] : enumerate(Match.Matches))
+			{
+				ListStrings.emplace_back(far::format(L"${}: {}"sv, Index, match_str(i)));
+				ListItems.push_back({ i.start < 0? LIF_GRAYED : LIF_NONE, ListStrings.back().c_str(), 0, 0 });
+			}
+
+			for (const auto& [k, v] : NamedMatch.Matches)
+			{
+				const auto& m = Match.Matches[v];
+				ListStrings[v] = far::format(L"${{{}}}: {}"sv, k, match_str(m));
+				ListItems[v].Text = ListStrings[v].c_str();
+			}
+
+			update_matches();
+			update_substitution();
+			return true;
+		};
+
+		const auto update_regex = [&]
+		{
+			try
+			{
+				const string_view RegexStr = std::bit_cast<const wchar_t*>(Dlg->SendMessage(DM_GETCONSTTEXTPTR, rp_edit_regex, {}));
+				Regex.Compile(RegexStr, RegexStr.starts_with(L'/')? OP_PERLSTYLE : 0);
+			}
+			catch (regex_exception const& e)
+			{
+				clear_matches();
+				update_cursor(e.position());
+				update_status(status::error, e.message());
+				return false;
+			}
+
+			update_cursor();
+			update_status(status::normal, msg(lng::MOk));
+			return update_test();
+		};
+
+		switch (Msg)
+		{
+		case DN_CTLCOLORDLGITEM:
+			if (Param1 == rp_edit_status)
+			{
+				const auto& Colors = *static_cast<FarDialogItemColors const*>(Param2);
+				Colors.Colors[0] = Colors.Colors[2] = colors::NtColorToFarColor(B_BLACK | status_to_color());
+			}
+			break;
+
+		case DN_EDITCHANGE:
+			{
+				SCOPED_ACTION(Dialog::suppress_redraw)(Dlg);
+
+				switch (Param1)
+				{
+				case rp_edit_regex:
+					update_regex();
+					break;
+
+				case rp_edit_test:
+					update_test();
+					break;
+
+				case rp_edit_substitution:
+					update_substitution();
+					break;
+				}
+			}
+			break;
+		}
+
+		return Dlg->DefProc(Msg, Param1, Param2);
+	});
+
+	const auto
+		DlgWidth = static_cast<int>(RegexDlgItems[rp_doublebox].X2) + 4,
+		DlgHeight = static_cast<int>(RegexDlgItems[rp_doublebox].Y2) + 2;
+
+	RegexDlg->SetPosition({ -1, -1, DlgWidth, DlgHeight });
+	RegexDlg->SetHelp(L"RegExp"sv);
+	RegexDlg->Process();
+}
+
 progress_impl::~progress_impl()
 {
 	if (m_Dialog)
 		m_Dialog->CloseDialog();
 }
 
-void progress_impl::init(span<DialogItemEx> const Items, rectangle const Position)
+void progress_impl::init(std::span<DialogItemEx> const Items, rectangle const Position, const UUID* Id)
 {
 	m_Dialog = Dialog::create(Items, [](Dialog* const Dlg, intptr_t const Msg, intptr_t const Param1, void* const Param2)
 	{
@@ -957,6 +1409,8 @@ void progress_impl::init(span<DialogItemEx> const Items, rectangle const Positio
 
 	m_Dialog->SetPosition(Position);
 	m_Dialog->SetCanLoseFocus(true);
+	if(Id)
+		m_Dialog->SetId(*Id);
 	m_Dialog->Process();
 
 	Global->WindowManager->PluginCommit();
@@ -991,7 +1445,7 @@ single_progress::single_progress(string_view const Title, string_view const Msg,
 	{
 		{ DI_TEXT,      {{ 0, 0 }, { 0,               0 }}, DIF_HIDDEN, {}, },
 		{ DI_DOUBLEBOX, {{ 3, 1 }, { DlgW - 4, DlgH - 2 }}, DIF_NONE,   Title, },
-		{ DI_TEXT,      {{ 5, 2 }, { DlgW - 6,        2 }}, DIF_NONE,   Msg },
+		{ DI_TEXT,      {{ 5, 2 }, { DlgW - 6,        2 }}, DIF_SHOWAMPERSAND, Msg },
 		{ DI_TEXT,      {{ 5, 3 }, { DlgW - 6,        3 }}, DIF_NONE,   make_progressbar(DlgW - 10, Percent, true, true) },
 	});
 
@@ -1007,7 +1461,7 @@ void single_progress::update(size_t const Percent) const
 {
 	m_Dialog->SendMessage(DM_SETTEXTPTR, single_progress_detail::items::pr_progress, UNSAFE_CSTR(make_progressbar(single_progress_detail::DlgW - 10, Percent, true, true)));
 
-	const auto Title = view_as<const wchar_t*>(m_Dialog->SendMessage(DM_GETCONSTTEXTPTR, single_progress_detail::items::pr_doublebox, {}));
+	const auto Title = std::bit_cast<const wchar_t*>(m_Dialog->SendMessage(DM_GETCONSTTEXTPTR, single_progress_detail::items::pr_doublebox, {}));
 	m_Dialog->SendMessage(DM_SETTEXTPTR, single_progress_detail::items::pr_console_title, UNSAFE_CSTR(concat(L'{', str(Percent), L"%} "sv, Title)));
 }
 
@@ -1042,7 +1496,7 @@ dirinfo_progress::dirinfo_progress(string_view const Title)
 	{
 		{ DI_DOUBLEBOX, {{ 3, 1 }, { DlgW - 4, DlgH - 2 }}, DIF_NONE,      Title, },
 		{ DI_TEXT,      {{ 5, 2 }, { DlgW - 6,        2 }}, DIF_NONE,      msg(lng::MScanningFolder) },
-		{ DI_TEXT,      {{ 5, 3 }, { DlgW - 6,        3 }}, DIF_NONE,      {} },
+		{ DI_TEXT,      {{ 5, 3 }, { DlgW - 6,        3 }}, DIF_SHOWAMPERSAND, {} },
 		{ DI_TEXT,      {{ 5, 4 }, { DlgW - 6,        4 }}, DIF_SEPARATOR, {} },
 		{ DI_TEXT,      {{ 5, 5 }, { DlgW - 6,        5 }}, DIF_NONE,      {} },
 		{ DI_TEXT,      {{ 5, 6 }, { DlgW - 6,        6 }}, DIF_NONE,      {} },

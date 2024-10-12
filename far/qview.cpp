@@ -59,12 +59,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "cvtname.hpp"
 #include "datetime.hpp"
 #include "global.hpp"
-#include "exception.hpp"
 #include "log.hpp"
 #include "stddlg.hpp"
 
 
 // Platform:
+#include "platform.hpp"
 #include "platform.com.hpp"
 #include "platform.fs.hpp"
 
@@ -149,49 +149,56 @@ void QuickView::DisplayObject()
 	{
 		SetColor(COL_PANELTEXT);
 		GotoXY(m_Where.left + 2, m_Where.top + 2);
-		const auto DisplayName = truncate_path(strCurFileName, std::max(size_t{}, m_Where.width() - 2 - msg(lng::MListFolder).size() - 5));
-		PrintText(format(FSTR(LR"({} "{}")"), msg(lng::MListFolder), DisplayName));
+		const auto DisplayName = truncate_path(strCurFileName, std::max(0uz, m_Where.width() - 2 - msg(lng::MListFolder).size() - 5));
+		PrintText(far::format(LR"({} "{}")", msg(lng::MListFolder), DisplayName));
 
 		const auto currAttr = os::fs::get_file_attributes(strCurFileName); // обламывается, если нет доступа
 		if (currAttr != INVALID_FILE_ATTRIBUTES && (currAttr&FILE_ATTRIBUTE_REPARSE_POINT))
 		{
-			string Target;
 			DWORD ReparseTag=0;
-			string TypeName;
+			string TypeName, Target;
+			bool KnownReparseTag = false;
+
 			if (GetReparsePointInfo(strCurFileName, Target, &ReparseTag))
 			{
+				KnownReparseTag = true;
 				NormalizeSymlinkName(Target);
-				switch(ReparseTag)
+
+				switch (ReparseTag)
 				{
-				// Directory Junction or Volume Mount Point
 				case IO_REPARSE_TAG_MOUNT_POINT:
 					{
 						auto ID_Msg = lng::MListJunction;
-						bool Root;
-						if(ParsePath(Target, nullptr, &Root) == root_type::volume && Root)
-						{
+						if (bool Root; ParsePath(Target, nullptr, &Root) == root_type::volume && Root)
 							ID_Msg = lng::MListVolMount;
-						}
+
 						TypeName = msg(ID_Msg);
 					}
 					break;
 
-				default:
-					if (!reparse_tag_to_string(ReparseTag, TypeName) && !Global->Opt->ShowUnknownReparsePoint)
-						TypeName = msg(lng::MQuickViewUnknownReparsePoint);
+				case IO_REPARSE_TAG_SYMLINK:
+					TypeName = msg(lng::MListSymlink);
 					break;
 				}
+
+				inplace::truncate_path(Target, std::max(0uz, m_Where.width() - 2 - TypeName.size() - 5));
 			}
-			else
+			else if (reparse_tag_to_string(ReparseTag, TypeName, Global->Opt->ShowUnknownReparsePoint))
+			{
+				TypeName = far::format(L"{} {}"sv, msg(lng::MQuickViewReparsePoint), TypeName);
+				KnownReparseTag = true;
+			}
+			else if (TypeName.empty())
 			{
 				TypeName = msg(lng::MQuickViewUnknownReparsePoint);
-				Target = msg(lng::MQuickViewNoData);
 			}
 
-			inplace::truncate_path(Target, std::max(size_t{}, m_Where.width() - 2 - TypeName.size() - 5));
 			SetColor(COL_PANELTEXT);
 			GotoXY(m_Where.left + 2, m_Where.top + 3);
-			PrintText(format(FSTR(LR"({} "{}")"), TypeName, Target));
+			PrintText(KnownReparseTag?
+				far::format(LR"({} "{}")", TypeName, Target) :
+				msg(lng::MQuickViewUnknownReparsePoint)
+			);
 		}
 
 		const auto bytes_suffix = upper(msg(lng::MListBytes));
@@ -220,7 +227,7 @@ void QuickView::DisplayObject()
 				lng::MQuickViewSlack,
 			};
 
-			const auto ColumnSize = msg(*std::max_element(ALL_CONST_RANGE(TableLabels), [](lng a, lng b) { return msg(a).size() < msg(b).size(); })).size() + 1;
+			const auto ColumnSize = std::ranges::fold_left(TableLabels, 0uz, [](size_t const Value, lng const Id) { return std::max(Value, msg(Id).size()); }) + 1;
 
 			const auto iColor = uncomplete_dirscan? COL_PANELHIGHLIGHTTEXT : COL_PANELINFOTEXT;
 			const auto prefix = uncomplete_dirscan? L"~"sv : L""sv;
@@ -240,14 +247,13 @@ void QuickView::DisplayObject()
 			PrintRow(5, lng::MQuickViewFiles, str(Data.FileCount));
 			PrintRow(6, lng::MQuickViewBytes, size2str(Data.FileSize));
 
-			const auto Format = FSTR(L"{} ({}%)"sv);
-			PrintRow(7, lng::MQuickViewAllocated, format(Format, size2str(Data.AllocationSize), ToPercent(Data.AllocationSize, Data.FileSize)));
+			PrintRow(7, lng::MQuickViewAllocated, far::format(L"{} ({}%)"sv, size2str(Data.AllocationSize), ToPercent(Data.AllocationSize, Data.FileSize)));
 
 			if (m_DirectoryScanStatus == scan_status::real_ok)
 			{
 				PrintRow(9, lng::MQuickViewCluster, GroupDigits(Data.ClusterSize));
-				PrintRow(10, lng::MQuickViewSlack, format(Format, size2str(Data.FilesSlack), ToPercent(Data.FilesSlack, Data.AllocationSize)));
-				PrintRow(11, lng::MQuickViewMFTOverhead, format(Format, size2str(Data.MFTOverhead), ToPercent(Data.MFTOverhead, Data.AllocationSize)));
+				PrintRow(10, lng::MQuickViewSlack, far::format(L"{} ({}%)"sv, size2str(Data.FilesSlack), ToPercent(Data.FilesSlack, Data.AllocationSize)));
+				PrintRow(11, lng::MQuickViewMFTOverhead, far::format(L"{} ({}%)"sv, size2str(Data.MFTOverhead), ToPercent(Data.MFTOverhead, Data.AllocationSize)));
 			}
 		}
 	}
@@ -496,12 +502,12 @@ void QuickView::QViewDelTempName()
 
 		if (!os::fs::set_file_attributes(strCurFileName, FILE_ATTRIBUTE_NORMAL)) // BUGBUG
 		{
-			LOGWARNING(L"set_file_attributes({}): {}"sv, strCurFileName, last_error());
+			LOGWARNING(L"set_file_attributes({}): {}"sv, strCurFileName, os::last_error());
 		}
 
 		if (!os::fs::delete_file(strCurFileName))  //BUGBUG
 		{
-			LOGWARNING(L"delete_file({}): {}"sv, strCurFileName, last_error());
+			LOGWARNING(L"delete_file({}): {}"sv, strCurFileName, os::last_error());
 		}
 
 		string_view TempDirectoryName = strCurFileName;
@@ -509,7 +515,7 @@ void QuickView::QViewDelTempName()
 		// BUGBUG check result
 		if (!os::fs::remove_directory(TempDirectoryName))
 		{
-			LOGWARNING(L"remove_directory({}): {}"sv, TempDirectoryName, last_error());
+			LOGWARNING(L"remove_directory({}): {}"sv, TempDirectoryName, os::last_error());
 		}
 
 		m_TemporaryFile = false;

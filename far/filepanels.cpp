@@ -60,6 +60,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "strmix.hpp"
 #include "diskmenu.hpp"
 #include "global.hpp"
+#include "keyboard.hpp"
 
 // Platform:
 #include "platform.env.hpp"
@@ -76,7 +77,9 @@ FilePanels::FilePanels(private_tag):
 {
 }
 
-filepanels_ptr FilePanels::create(bool CreateRealPanels, int DirCount)
+FilePanels::~FilePanels() = default;
+
+filepanels_ptr FilePanels::create(bool CreateRealPanels)
 {
 	const auto FilePanelsPtr = std::make_shared<FilePanels>(private_tag());
 
@@ -87,7 +90,7 @@ filepanels_ptr FilePanels::create(bool CreateRealPanels, int DirCount)
 	{
 		FilePanelsPtr->m_Panels[panel_left].m_Panel = FilePanelsPtr->CreatePanel(static_cast<panel_type>(Global->Opt->LeftPanel.m_Type.Get()));
 		FilePanelsPtr->m_Panels[panel_right].m_Panel = FilePanelsPtr->CreatePanel(static_cast<panel_type>(Global->Opt->RightPanel.m_Type.Get()));
-		FilePanelsPtr->Init(DirCount);
+		FilePanelsPtr->Init();
 	}
 	else
 	{
@@ -122,13 +125,14 @@ static void PrepareOptFolder(string &strSrc, bool IsLocalPath_FarPath)
 	}
 	else
 	{
-		CheckShortcutFolder(strSrc, true, true);
+		if (!os::fs::is_directory(strSrc))
+			CutToExistingParent(strSrc);
 	}
 
 	//ConvertNameToFull(strSrc,strSrc);
 }
 
-void FilePanels::Init(int DirCount)
+void FilePanels::Init()
 {
 	CmdLine = std::make_unique<CommandLine>(shared_from_this());
 	TopMenuBar = std::make_unique<MenuBar>(shared_from_this());
@@ -183,31 +187,8 @@ void FilePanels::Init(int DirCount)
 		Params.first->InitCurDir(os::fs::exists(Params.second.Folder.Get())? Params.second.Folder.Get() : Global->g_strFarPath);
 	};
 
-	if (Global->Opt->AutoSaveSetup || !DirCount)
-	{
-		InitCurDir_checked(Left);
-		InitCurDir_checked(Right);
-	}
-
-	if (!Global->Opt->AutoSaveSetup)
-	{
-		if (DirCount >= 1)
-		{
-			InitCurDir_checked(IsRightActive()? Right : Left);
-
-			if (DirCount == 2)
-			{
-				InitCurDir_checked(IsLeftActive()? Right : Left);
-			}
-		}
-
-		const string& PassiveFolder = m_ActivePanelIndex == panel_right? Left.second.Folder : Right.second.Folder;
-
-		if (DirCount < 2 && !PassiveFolder.empty() && os::fs::exists(PassiveFolder))
-		{
-			PassivePanel()->InitCurDir(PassiveFolder);
-		}
-	}
+	InitCurDir_checked(Left);
+	InitCurDir_checked(Right);
 
 #if 1
 	const auto show_if_visible = [](const std::pair<panel_ptr, Options::PanelOptions&>& Params)
@@ -241,12 +222,8 @@ void FilePanels::Init(int DirCount)
 
 void FilePanels::SetPanelPositions(bool LeftFullScreen, bool RightFullScreen) const
 {
-	if (Global->Opt->WidthDecrement < -(ScrX/2-10))
-		Global->Opt->WidthDecrement=-(ScrX/2-10);
-
-	if (Global->Opt->WidthDecrement > (ScrX/2-10))
-		Global->Opt->WidthDecrement=(ScrX/2-10);
-
+	const auto AbsMaxWidthDecrement = std::max(0ll, ScrX / 2 - 10ll);
+	Global->Opt->WidthDecrement = std::max(-AbsMaxWidthDecrement, std::min(Global->Opt->WidthDecrement.Get(), AbsMaxWidthDecrement));
 	Global->Opt->LeftHeightDecrement = std::max(0ll, std::min(Global->Opt->LeftHeightDecrement.Get(), ScrY - 7ll));
 	Global->Opt->RightHeightDecrement = std::max(0ll, std::min(Global->Opt->RightHeightDecrement.Get(), ScrY - 7ll));
 
@@ -362,8 +339,9 @@ int FilePanels::SwapPanels()
 	if (!LeftPanel()->IsVisible() && !RightPanel()->IsVisible())
 		return false;
 
-	using std::swap;
-	swap(m_Panels[panel_left], m_Panels[panel_right]);
+	std::ranges::swap(m_Panels[panel_left], m_Panels[panel_right]);
+	m_Panels[panel_left].m_Panel->on_swap();
+	m_Panels[panel_right].m_Panel->on_swap();
 	filters::SwapPanelFilters();
 	m_ActivePanelIndex = IsLeftActive()? panel_right : panel_left;
 
@@ -850,6 +828,7 @@ void FilePanels::SetActivePanel(Panel* ToBeActive)
 {
 	if (ActivePanel().get() != ToBeActive)
 	{
+		Global->FolderChanged();
 		SetPassivePanelInternal(ActivePanel());
 		SetActivePanelInternal(ToBeActive->shared_from_this());
 	}
@@ -999,7 +978,8 @@ panel_ptr FilePanels::ChangePanel(panel_ptr Current, panel_type NewType, int Cre
 	}
 	else
 	{
-		NewPanel=CreatePanel(NewType);
+		NewPanel->dispose();
+		NewPanel = CreatePanel(NewType);
 	}
 
 	if (!UsedLastPanel)
@@ -1140,6 +1120,14 @@ bool FilePanels::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 {
 	if (!MouseEvent->dwMousePosition.Y)
 	{
+		if (!Global->Opt->ShowColumnTitles) // Sort Mark letter in the menu area
+		{
+			if (ActivePanel()->ProcessMouse(MouseEvent))
+				return true;
+			if (PassivePanel()->ProcessMouse(MouseEvent))
+				return true;
+		}
+
 		if ((MouseEvent->dwButtonState & 3) && !MouseEvent->dwEventFlags)
 		{
 			if (!MouseEvent->dwMousePosition.X)
@@ -1153,7 +1141,7 @@ bool FilePanels::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 
 	if (MouseEvent->dwButtonState&FROM_LEFT_2ND_BUTTON_PRESSED)
 	{
-		if (MouseEvent->dwEventFlags == MOUSE_MOVED)
+		if (!IsMouseButtonEvent(MouseEvent->dwEventFlags))
 			return true;
 
 		int Key = KEY_ENTER;

@@ -36,17 +36,13 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include <chrono>
-#include <map>
-#include <set>
-#include <unordered_map>
-#include <unordered_set>
-
 #include "compiler.hpp"
+
+#include <version>
 
 //----------------------------------------------------------------------------
 
-#if COMPILER(GCC)
+#ifdef FAR_ENABLE_CORRECT_ISO_CPP_WCHAR_H_OVERLOADS
 // These inline implementations in gcc/cwchar are wrong and non-compilable if _CONST_RETURN is defined.
 namespace std
 {
@@ -84,7 +80,10 @@ using std::wmemchr;
 
 #endif
 
+//----------------------------------------------------------------------------
+
 #if COMPILER(GCC) && !defined(_GLIBCXX_HAS_GTHREADS)
+
 namespace std::this_thread
 {
 	inline void yield() noexcept
@@ -94,107 +93,11 @@ namespace std::this_thread
 }
 #endif
 
-
-#ifndef __cpp_lib_erase_if
-namespace std
-{
-	namespace detail
-	{
-		template<typename container, typename predicate>
-		void sequential_erase(container& Container, const predicate& Predicate)
-		{
-			Container.erase(std::remove(Container.begin(), Container.end(), Predicate), Container.end());
-		}
-
-		template<typename container, typename predicate>
-		void sequential_erase_if(container& Container, const predicate& Predicate)
-		{
-			Container.erase(std::remove_if(Container.begin(), Container.end(), Predicate), Container.end());
-		}
-
-		template<typename container, typename predicate>
-		void associative_erase_if(container& Container, const predicate& Predicate)
-		{
-			for (auto i = Container.begin(), End = Container.end(); i != End; )
-			{
-				if (Predicate(*i))
-				{
-					i = Container.erase(i);
-				}
-				else
-				{
-					++i;
-				}
-			}
-		}
-	}
-
-	template <typename value, typename... traits>
-	void erase(std::basic_string<traits...>& Container, const value& Value) { detail::sequential_erase(Container, Value); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::basic_string<traits...>& Container, predicate Predicate) { detail::sequential_erase_if(Container, Predicate); }
-
-	template <typename value, typename... traits>
-	void erase(std::vector<traits...>& Container, const value& Value) { detail::sequential_erase(Container, Value); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::vector<traits...>& Container, predicate Predicate) { detail::sequential_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::set<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::multiset<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::map<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::multimap<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::unordered_set<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::unordered_multiset<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::unordered_map<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-
-	template <typename predicate, typename... traits>
-	void erase_if(std::unordered_multimap<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
-}
-#endif
-
-#if COMPILER(CLANG) && IS_MICROSOFT_SDK() && defined __cpp_char8_t && !defined __cpp_lib_char8_t
-namespace std
-{
-	inline namespace literals
-	{
-		inline namespace string_view_literals
-		{
-WARNING_PUSH()
-WARNING_DISABLE_CLANG("-Wuser-defined-literals")
-			[[nodiscard]]
-			constexpr basic_string_view<char8_t> operator"" sv(const char8_t* const Str, size_t const Size) noexcept
-			{
-				return { Str, Size };
-			}
-WARNING_POP()
-		}
-	}
-}
-#endif
-
-#if (IS_MICROSOFT_SDK() && __cplusplus < 202004) || !defined __cpp_lib_bitops // Not related, just no better way to check
-namespace std::chrono
-{
-	using days = duration<int, ratio_multiply<ratio<24>, hours::period>>;
-}
-#endif
+//----------------------------------------------------------------------------
 
 #ifndef __cpp_lib_to_underlying
+#include <type_traits>
+
 namespace std
 {
 	template<class enum_type>
@@ -205,5 +108,80 @@ namespace std
 	}
 }
 #endif
+
+#ifndef __cpp_lib_unreachable
+#include <cassert>
+
+namespace std
+{
+	[[noreturn]]
+	inline void unreachable()
+	{
+		assert(false);
+
+#if COMPILER(CL)
+		__assume(0);
+#else
+		__builtin_unreachable();
+#endif
+	}
+}
+#endif
+
+#ifndef __cpp_lib_ranges_fold
+#include <algorithm>
+#ifndef _LIBCPP___ALGORITHM_FOLD_H // as of March 2024 libc++ doesn't define __cpp_lib_ranges_fold
+#include <functional>
+#include <iterator>
+#include <ranges>
+#include <type_traits>
+#include <utility>
+
+namespace std::ranges
+{
+	struct fold_left_fn
+	{
+		template<std::input_iterator I, std::sentinel_for<I> S, typename T, typename F>
+		constexpr auto operator()(I first, S last, T init, F f) const
+		{
+			using U = std::decay_t<std::invoke_result_t<F&, T, std::iter_reference_t<I>>>;
+			if (first == last)
+				return U(std::move(init));
+			U accum = std::invoke(f, std::move(init), *first);
+			for (++first; first != last; ++first)
+				accum = std::invoke(f, std::move(accum), *first);
+			return std::move(accum);
+		}
+
+		template<ranges::input_range R, typename T, typename F>
+		constexpr auto operator()(R&& r, T init, F f) const
+		{
+			return (*this)(ranges::begin(r), ranges::end(r), std::move(init), std::ref(f));
+		}
+	};
+
+	inline constexpr fold_left_fn fold_left;
+}
+#endif
+#endif
+
+#ifndef __cpp_size_t_suffix
+
+WARNING_PUSH()
+WARNING_DISABLE_MSC(4455) // 'operator operator': literal suffix identifiers that do not start with an underscore are reserved
+
+[[nodiscard]] consteval size_t operator""uz(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""Uz(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""uZ(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""UZ(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""zu(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""Zu(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""zU(unsigned long long const Value) noexcept { return Value; }
+[[nodiscard]] consteval size_t operator""ZU(unsigned long long const Value) noexcept { return Value; }
+
+WARNING_POP()
+
+#endif
+//----------------------------------------------------------------------------
 
 #endif // CPP_HPP_95E41B70_5DB2_4E5B_A468_95343C6438AD

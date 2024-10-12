@@ -60,13 +60,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.env.hpp"
 #include "platform.fs.hpp"
 
 // Common:
 #include "common/string_utils.hpp"
 #include "common/scope_exit.hpp"
-#include "common/view/select.hpp"
 
 // External:
 #include "format.hpp"
@@ -134,7 +134,7 @@ struct subst_data
 	bool PassivePanel{};
 	bool EscapeAmpersands{};
 
-	unordered_string_map<string>* Variables;
+	unordered_string_map<string>* Variables{};
 };
 
 
@@ -145,6 +145,8 @@ namespace tokens
 	const auto
 		passive_panel                = L"!#"sv,
 		active_panel                 = L"!^"sv,
+		left_panel                   = L"!["sv,
+		right_panel                  = L"!]"sv,
 		exclamation                  = L"!!"sv,
 		name_extension               = L"!.!"sv,
 		short_name                   = L"!~"sv,
@@ -169,12 +171,12 @@ namespace tokens
 	{
 	public:
 		skip(string_view const Str, string_view const Test) :
-			m_Tail(starts_with(Str, Test) ? Str.substr(Test.size()) : string_view{})
+			m_Tail(Str.starts_with(Test)? Str.substr(Test.size()) : string_view{})
 		{
 		}
 
 		explicit operator bool() const { return m_Tail.data() != nullptr; }
-		operator string_view() const { assert(*this); return m_Tail; }
+		explicit(false) operator string_view() const { assert(*this); return m_Tail; }
 
 	private:
 		string_view m_Tail;
@@ -230,7 +232,7 @@ static size_t ProcessBrackets(string_view const Str, wchar_t const EndMark, brac
 			if (*Iterator == L'(')
 			{
 				if (!Brackets.BeginBracket)
-					Brackets.BeginBracket = &*Iterator;
+					Brackets.BeginBracket = std::to_address(Iterator);
 
 				++BracketsCount;
 				continue;
@@ -246,7 +248,7 @@ static size_t ProcessBrackets(string_view const Str, wchar_t const EndMark, brac
 				if (BracketsCount)
 					continue;
 
-				Brackets.EndBracket = &*Iterator;
+				Brackets.EndBracket = std::to_address(Iterator);
 				continue;
 			}
 		}
@@ -314,7 +316,7 @@ static void MakeListFile(panel_ptr const& Panel, string& ListFileName, bool cons
 			break;
 
 		case L'W':
-			CodePage = CP_UNICODE;
+			CodePage = CP_UTF16LE;
 			break;
 
 		case L'F':
@@ -348,15 +350,15 @@ static void MakeListFile(panel_ptr const& Panel, string& ListFileName, bool cons
 
 	ListFileName = MakeTemp();
 
-	const os::fs::file ListFile(ListFileName, GENERIC_WRITE, os::fs::file_share_all, nullptr, CREATE_ALWAYS);
+	const os::fs::file ListFile(ListFileName, GENERIC_WRITE, os::fs::file_share_read, nullptr, CREATE_ALWAYS);
 	if (!ListFile)
-		throw MAKE_FAR_EXCEPTION(msg(lng::MCannotCreateListTemp));
+		throw far_exception(msg(lng::MCannotCreateListTemp));
 
 	SCOPE_FAIL
 	{
 		if (!os::fs::delete_file(ListFileName)) // BUGBUG
 		{
-			LOGWARNING(L"delete_file({}): {}"sv, ListFileName, last_error());
+			LOGWARNING(L"delete_file({}): {}"sv, ListFileName, os::last_error());
 		}
 	};
 
@@ -397,9 +399,21 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 		return Tail;
 	}
 
+	if (const auto Tail = tokens::skip(CurStr, tokens::left_panel))
+	{
+		SubstData.PassivePanel = SubstData.This.Panel->Parent()->IsRightActive();
+		return Tail;
+	}
+
+	if (const auto Tail = tokens::skip(CurStr, tokens::right_panel))
+	{
+		SubstData.PassivePanel = SubstData.This.Panel->Parent()->IsLeftActive();
+		return Tail;
+	}
+
 	if (const auto Tail = tokens::skip(CurStr, tokens::exclamation))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			Out.push_back(L'!');
 			return Tail;
@@ -408,7 +422,7 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	if (const auto Tail = tokens::skip(CurStr, tokens::name_extension))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			append_with_escape(Out, SubstData.Default().Normal.Name);
 			return Tail;
@@ -441,22 +455,21 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	const auto CollectNames = [&SubstData, &append_with_escape](string_view const Tail, string& Str, auto const Selector)
 	{
-		const auto ExplicitQuote = starts_with(Tail, L'Q');
-		const auto ExplicitNoQuote = starts_with(Tail, L'q');
+		const auto ExplicitQuote = Tail.starts_with(L'Q');
+		const auto ExplicitNoQuote = Tail.starts_with(L'q');
 
 		const auto Quote = ExplicitQuote || !ExplicitNoQuote;
 
 		append_with_escape(
 			Str,
 			join(
-				select(
-					SubstData.Default().Panel->enum_selected(),
+				L" "sv,
+				SubstData.Default().Panel->enum_selected() | std::views::transform(
 					[&](os::fs::find_data const& i)
 					{
 						const auto Data = std::invoke(Selector, i);
 						return Quote? quote(Data) : quote_space(Data);
-					}),
-					L" "sv
+					})
 			)
 		);
 
@@ -465,7 +478,7 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	if (const auto Tail = tokens::skip(CurStr, tokens::short_list))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			return CollectNames(Tail, Out, &os::fs::find_data::AlternateFileName);
 		}
@@ -473,7 +486,7 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	if (const auto Tail = tokens::skip(CurStr, tokens::list))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			return CollectNames(Tail, Out, &os::fs::find_data::FileName);
 		}
@@ -482,8 +495,8 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 	const auto GetListName = [&Out, &append_with_escape](string_view const Tail, subst_data& Data, bool Short)
 	{
 		const auto ExclPos = Tail.find(L'!');
-		if (ExclPos == Tail.npos || starts_with(Tail.substr(ExclPos + 1), L'?'))
-			return size_t{};
+		if (ExclPos == Tail.npos || Tail.substr(ExclPos + 1).starts_with(L'?'))
+			return 0uz;
 
 		const auto Modifiers = Tail.substr(0, ExclPos);
 
@@ -520,7 +533,7 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	if (const auto Tail = tokens::skip(CurStr, tokens::short_name_extension))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			append_with_escape(Out, SubstData.Default().Short.Name);
 			return Tail;
@@ -529,7 +542,7 @@ static string_view ProcessMetasymbol(string_view const CurStr, subst_data& Subst
 
 	if (const auto Tail = tokens::skip(CurStr, tokens::short_name_extension_safe))
 	{
-		if (!starts_with(Tail, L'?'))
+		if (!string_view(Tail).starts_with(L'?'))
 		{
 			append_with_escape(Out, SubstData.Default().Short.Name);
 			SubstData.PreserveLFN = true;
@@ -623,7 +636,7 @@ static string_view ProcessVariable(string_view const CurStr, const subst_data& S
 {
 	const auto Str = CurStr.substr(1);
 
-	const auto Iterator = std::find_if(ALL_CONST_RANGE(*SubstData.Variables), [&](std::pair<string, string> const& i)
+	const auto Iterator = std::ranges::find_if(*SubstData.Variables, [&](std::pair<string, string> const& i)
 	{
 		return starts_with_icase(Str, i.first);
 	});
@@ -673,7 +686,7 @@ static string process_subexpression(const subst_strings::item& Item, subst_data&
 	return Processed == Item.Sub?
 		string(Item.All) :
 		concat(Item.prefix(), Processed, Item.suffix());
-};
+}
 
 static bool InputVariablesDialog(string& strStr, subst_data& SubstData, string_view const DlgTitle)
 {
@@ -686,7 +699,7 @@ static bool InputVariablesDialog(string& strStr, subst_data& SubstData, string_v
 
 	const auto GenerateHistoryName = [&](size_t const Index)
 	{
-		return format(FSTR(L"{}{}"sv), HistoryAndVariablePrefix, Index);
+		return far::format(L"{}{}"sv, HistoryAndVariablePrefix, Index);
 	};
 
 	constexpr auto ExpectedTokensCount = 64;
@@ -836,8 +849,7 @@ static bool InputVariablesDialog(string& strStr, subst_data& SubstData, string_v
 
 	for (size_t n = 0; n != strStr.size(); ++n)
 	{
-		const auto ItemIterator = std::find_if(CONST_RANGE(Positions, i) { return i.Pos == n; });
-		if (ItemIterator != Positions.cend())
+		if (const auto ItemIterator = std::ranges::find(Positions, n, &pos_item::Pos); ItemIterator != Positions.cend())
 		{
 			strTmpStr += DlgData[(ItemIterator - Positions.cbegin()) * 2 + 2].strData;
 			n = ItemIterator->EndPos;
@@ -854,7 +866,7 @@ static bool InputVariablesDialog(string& strStr, subst_data& SubstData, string_v
 			continue;
 
 		const auto Index = (&i - DlgData.data() - 1) / 2;
-		const auto VariableName = format(FSTR(L"%{}{}"sv), HistoryAndVariablePrefix, Index + 1);
+		const auto VariableName = far::format(L"%{}{}"sv, HistoryAndVariablePrefix, Index + 1);
 		replace_icase(strTmpStr, VariableName, i.strData);
 
 		if (!i.strHistory.empty() && i.strHistory != GenerateHistoryName(Index))

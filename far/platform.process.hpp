@@ -66,7 +66,7 @@ namespace os::process
 	{
 		DWORD Pid;
 		string_view Name;
-		span<SYSTEM_THREAD_INFORMATION const> Threads;
+		std::span<SYSTEM_THREAD_INFORMATION const> Threads;
 	};
 
 	class [[nodiscard]] enum_processes: public enumerator<enum_processes, enum_process_entry>
@@ -83,6 +83,12 @@ namespace os::process
 		block_ptr<SYSTEM_PROCESS_INFORMATION> m_Info;
 		mutable size_t m_Offset{};
 	};
+
+	bool terminate_other(int Pid);
+	[[noreturn]]
+	void terminate(int ExitCode);
+	[[noreturn]]
+	void terminate_by_user(int ExitCode = EXIT_FAILURE);
 }
 
 #endif // PLATFORM_PROCESS_HPP_234140CB_C857_40CF_901D_A10C5EBEA85B

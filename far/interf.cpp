@@ -57,6 +57,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "global.hpp"
 #include "log.hpp"
 #include "char_width.hpp"
+#include "exception_handler.hpp"
 
 // Platform:
 #include "platform.concurrency.hpp"
@@ -64,7 +65,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "platform.security.hpp"
 
 // Common:
-#include "common/function_ref.hpp"
 
 // External:
 #include "format.hpp"
@@ -78,22 +78,26 @@ static HICON load_icon(int IconId, bool Big)
 
 static HICON set_icon(HWND Wnd, bool Big, HICON Icon)
 {
-	return reinterpret_cast<HICON>(SendMessage(Wnd, WM_SETICON, Big? ICON_BIG : ICON_SMALL, reinterpret_cast<LPARAM>(Icon)));
+	return std::bit_cast<HICON>(SendMessage(Wnd, WM_SETICON, Big? ICON_BIG : ICON_SMALL, std::bit_cast<LPARAM>(Icon)));
 }
 
-void consoleicons::set_icon()
+void consoleicons::update_icon()
 {
 	if (!Global->Opt->SetIcon)
 		return restore_icon();
-
-	const auto hWnd = console.GetWindow();
-	if (!hWnd)
-		return;
 
 	if (Global->Opt->IconIndex < 0 || static_cast<size_t>(Global->Opt->IconIndex) >= size())
 		return;
 
 	const int IconId = (Global->Opt->SetAdminIcon && os::security::is_admin())? FAR_ICON_RED : FAR_ICON + Global->Opt->IconIndex;
+	set_icon(IconId);
+}
+
+void consoleicons::set_icon(int const IconId)
+{
+	const auto hWnd = console.GetWindow();
+	if (!hWnd)
+		return;
 
 	const auto Set = [&](icon& Icon)
 	{
@@ -156,7 +160,7 @@ static point InitialSize;
 
 static os::event& CancelIoInProgress()
 {
-	static os::event s_CancelIoInProgress;
+	static os::event s_CancelIoInProgress(os::event::type::manual, os::event::state::nonsignaled);
 	return s_CancelIoInProgress;
 }
 
@@ -172,7 +176,7 @@ static void CancelSynchronousIoWrapper(void* Thread)
 	CancelIoInProgress().reset();
 }
 
-static BOOL WINAPI CtrlHandler(DWORD CtrlType)
+static BOOL control_handler(DWORD CtrlType)
 {
 	switch(CtrlType)
 	{
@@ -183,7 +187,8 @@ static BOOL WINAPI CtrlHandler(DWORD CtrlType)
 		if(!CancelIoInProgress().is_signaled())
 		{
 			CancelIoInProgress().set();
-			os::thread(os::thread::mode::detach, &CancelSynchronousIoWrapper, Global->MainThreadHandle());
+			os::thread Thread(&CancelSynchronousIoWrapper, Global->MainThreadHandle());
+			Thread.detach();
 		}
 		WriteInput(KEY_BREAK);
 
@@ -212,6 +217,19 @@ static BOOL WINAPI CtrlHandler(DWORD CtrlType)
 		//return TRUE;
 	}
 	return FALSE;
+}
+
+static BOOL WINAPI CtrlHandler(DWORD CtrlType)
+{
+	return cpp_try(
+	[&]
+	{
+		return control_handler(CtrlType);
+	},
+	[&](source_location const&)
+	{
+		return FALSE;
+	});
 }
 
 static bool ConsoleGlobalKeysHook(const Manager::Key& key)
@@ -302,27 +320,29 @@ static bool ConsoleGlobalKeysHook(const Manager::Key& key)
 
 void InitConsole()
 {
-	static bool FirstInit = true;
-
-	if (FirstInit)
+	if (static bool FirstInit = true; FirstInit)
 	{
-		CancelIoInProgress() = os::event(os::event::type::manual, os::event::state::nonsignaled);
-
-		DWORD Mode;
-		if(!console.GetMode(console.GetInputHandle(), Mode))
-		{
-			static const auto ConIn = os::OpenConsoleInputBuffer();
-			SetStdHandle(STD_INPUT_HANDLE, ConIn.native_handle());
-		}
-
-		if(!console.GetMode(console.GetOutputHandle(), Mode))
-		{
-			static const auto ConOut = os::OpenConsoleActiveScreenBuffer();
-			SetStdHandle(STD_OUTPUT_HANDLE, ConOut.native_handle());
-			SetStdHandle(STD_ERROR_HANDLE, ConOut.native_handle());
-		}
-
 		Global->WindowManager->AddGlobalKeyHandler(ConsoleGlobalKeysHook);
+		FirstInit = false;
+	}
+
+	if (DWORD Mode; !console.GetMode(console.GetInputHandle(), Mode))
+	{
+		static os::handle ConIn;
+		// Separately to allow reinitialization
+		ConIn = os::OpenConsoleInputBuffer();
+
+		SetStdHandle(STD_INPUT_HANDLE, ConIn.native_handle());
+	}
+
+	if (DWORD Mode; !console.GetMode(console.GetOutputHandle(), Mode))
+	{
+		static os::handle ConOut;
+		// Separately to allow reinitialization
+		ConOut = os::OpenConsoleActiveScreenBuffer();
+
+		SetStdHandle(STD_OUTPUT_HANDLE, ConOut.native_handle());
+		SetStdHandle(STD_ERROR_HANDLE, ConOut.native_handle());
 	}
 
 	console.SetControlHandler(CtrlHandler, true);
@@ -338,48 +358,42 @@ void InitConsole()
 	console.GetSize(InitialSize);
 	console.GetCursorInfo(InitialCursorInfo);
 
-	if (FirstInit)
-	{
-		rectangle WindowRect;
-		console.GetWindowRect(WindowRect);
-		console.GetSize(InitSize);
+	rectangle WindowRect;
+	console.GetWindowRect(WindowRect);
+	console.GetSize(InitSize);
 
-		if(Global->Opt->WindowMode)
+	if(Global->Opt->WindowMode)
+	{
+		AdjustConsoleScreenBufferSize();
+		console.ResetViewportPosition();
+	}
+	else
+	{
+		if (WindowRect.left || WindowRect.top || WindowRect.right != InitSize.x - 1 || WindowRect.bottom != InitSize.y - 1)
 		{
-			AdjustConsoleScreenBufferSize();
-			console.ResetViewportPosition();
+			console.SetSize({ WindowRect.width(), WindowRect.height() });
+			console.GetSize(InitSize);
 		}
-		else
+	}
+	if (IsZoomed(console.GetWindow()))
+	{
+		ChangeVideoMode(true);
+	}
+	else
+	{
+		point CurrentSize;
+		if (console.GetSize(CurrentSize))
 		{
-			if (WindowRect.left || WindowRect.top || WindowRect.right != InitSize.x - 1 || WindowRect.bottom != InitSize.y - 1)
-			{
-				console.SetSize({ WindowRect.width(), WindowRect.height() });
-				console.GetSize(InitSize);
-			}
-		}
-		if (IsZoomed(console.GetWindow()))
-		{
-			ChangeVideoMode(true);
-		}
-		else
-		{
-			point CurrentSize;
-			if (console.GetSize(CurrentSize))
-			{
-				SaveNonMaximisedBufferSize(CurrentSize);
-			}
+			SaveNonMaximisedBufferSize(CurrentSize);
 		}
 	}
 
-
 	SetFarConsoleMode();
+	SetPalette();
 
 	UpdateScreenSize();
-	Global->ScrBuf->FillBuf();
 
-	consoleicons::instance().set_icon();
-
-	FirstInit = false;
+	consoleicons::instance().update_icon();
 }
 
 void CloseConsole()
@@ -542,8 +556,13 @@ void ChangeVideoMode(bool Maximize)
 
 	if (Maximize)
 	{
-		SendMessage(console.GetWindow(),WM_SYSCOMMAND,SC_MAXIMIZE,0);
-		coordScreen = console.GetLargestWindowSize();
+		SendMessage(console.GetWindow(), WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+
+		coordScreen = console.GetLargestWindowSize(console.GetOutputHandle());
+
+		if (!coordScreen.x || !coordScreen.y)
+			return;
+
 		coordScreen.x += Global->Opt->ScrSize.DeltaX;
 		coordScreen.y += Global->Opt->ScrSize.DeltaY;
 	}
@@ -776,12 +795,25 @@ point GetCursorPos()
 
 void SetCursorType(bool const Visible, size_t Size)
 {
-	if (Size == static_cast<size_t>(-1) || !Visible)
+	if (Size == static_cast<size_t>(-1))
 	{
-		const size_t index = IsConsoleFullscreen()? 1 : 0;
-		Size = Global->Opt->CursorSize[index]? static_cast<int>(Global->Opt->CursorSize[index]) : InitialCursorInfo.dwSize;
+		Size = static_cast<size_t>(Global->Opt->CursorSize[IsConsoleFullscreen()? 1 : 0]);
 	}
+
+	if (!Size)
+		Size = InitialCursorInfo.dwSize;
+
 	Global->ScrBuf->SetCursorType(Visible, Size);
+}
+
+void HideCursor()
+{
+	SetCursorType(false, 0);
+}
+
+void ShowCursor()
+{
+	SetCursorType(true, -1);
 }
 
 void SetInitialCursorType()
@@ -809,20 +841,25 @@ void Text(point Where, const FarColor& Color, string_view const Str)
 	Text(Str);
 }
 
-static void string_to_buffer_simple(string_view const Str, std::vector<FAR_CHAR_INFO>& Buffer, size_t)
+static void string_to_buffer_simple(string_view const Str, std::vector<FAR_CHAR_INFO>& Buffer, size_t const MaxSize)
 {
-	std::transform(ALL_CONST_RANGE(Str), std::back_inserter(Buffer), [](wchar_t c) { return FAR_CHAR_INFO{ c, CurColor }; });
+	const auto From = Str.substr(0, MaxSize);
+	Buffer.reserve(From.size());
+
+	std::ranges::transform(From, std::back_inserter(Buffer), [](wchar_t c) { return FAR_CHAR_INFO{ c, {}, {}, CurColor }; });
 }
 
 static void string_to_buffer_full_width_aware(string_view Str, std::vector<FAR_CHAR_INFO>& Buffer, size_t const MaxSize)
 {
+	Buffer.reserve(Str.size());
+
 	while(!Str.empty() && Buffer.size() != MaxSize)
 	{
 		wchar_t Char[]{ Str[0], 0 };
 
 		const auto Codepoint = encoding::utf16::extract_codepoint(Str);
 
-		if (Codepoint > std::numeric_limits<wchar_t>::max())
+		if (Codepoint > std::numeric_limits<char16_t>::max())
 		{
 			Char[1] = Str[1];
 			Str.remove_prefix(2);
@@ -832,7 +869,7 @@ static void string_to_buffer_full_width_aware(string_view Str, std::vector<FAR_C
 			Str.remove_prefix(1);
 		}
 
-		Buffer.push_back({ Char[0], CurColor });
+		Buffer.push_back({ Char[0], {}, {}, CurColor });
 
 		if (char_width::is_wide(Codepoint))
 		{
@@ -846,13 +883,13 @@ static void string_to_buffer_full_width_aware(string_view Str, std::vector<FAR_C
 			if (Char[1])
 			{
 				// It's wide and it already occupies two cells - awesome
-				Buffer.push_back({ Char[1], CurColor });
+				Buffer.push_back({ Char[1], {}, {}, CurColor });
 			}
 			else
 			{
 				// It's wide and we need to add a bogus cell
 				Buffer.back().Attributes.Flags |= COMMON_LVB_LEADING_BYTE;
-				Buffer.push_back({ Char[0], CurColor });
+				Buffer.push_back({ Char[0], {}, {}, CurColor });
 				Buffer.back().Attributes.Flags |= COMMON_LVB_TRAILING_BYTE;
 			}
 		}
@@ -861,24 +898,18 @@ static void string_to_buffer_full_width_aware(string_view Str, std::vector<FAR_C
 			if (Char[1])
 			{
 				// It's a surrogate pair that occupies one cell only. Here be dragons.
-				if (console.IsVtEnabled())
+				if (console.IsVtActive())
 				{
 					// Put *one* fake character:
 					Buffer.back().Char = encoding::replace_char;
 					// Stash the actual codepoint. The drawing code will restore it from here:
-					Buffer.back().Attributes.Reserved[0] = Codepoint;
-
-					// As of 10 Jun 2021, neither Conhost nor Terminal can render these properly.
-					// Expect the broken UI
-
-					// Uncomment for testing:
-					// Buffer.back().Attributes.Reserved[0] = 0;
+					Buffer.back().Reserved1 = Codepoint;
 				}
 				else
 				{
 					// Classic grid mode, nothing we can do :(
 					// Expect the broken UI
-					Buffer.push_back({ Char[1], CurColor });
+					Buffer.push_back({ Char[1], {}, {}, CurColor });
 				}
 			}
 			else
@@ -895,7 +926,6 @@ size_t Text(string_view Str, size_t const MaxWidth)
 		return 0;
 
 	std::vector<FAR_CHAR_INFO> Buffer;
-	Buffer.reserve(Str.size());
 
 	(char_width::is_enabled()?string_to_buffer_full_width_aware : string_to_buffer_simple)(Str, Buffer, MaxWidth);
 
@@ -1189,23 +1219,23 @@ string escape_ampersands(string_view const Str)
 
 void SetScreen(rectangle const Where, wchar_t Ch, const FarColor& Color)
 {
-	Global->ScrBuf->FillRect(Where, { Ch, Color });
+	Global->ScrBuf->FillRect(Where, { Ch, {}, {}, Color });
 }
 
-void MakeShadow(rectangle const Where, bool const IsLegacy)
+void MakeShadow(rectangle const Where)
 {
-	Global->ScrBuf->ApplyShadow(Where, IsLegacy);
+	Global->ScrBuf->ApplyShadow(Where);
 }
 
-void DropShadow(rectangle const Where, bool const IsLegacy)
+void DropShadow(rectangle const Where)
 {
-	MakeShadow({ Where.left + 2, Where.bottom + 1, Where.right + 2, Where.bottom + 1 }, IsLegacy);
-	MakeShadow({ Where.right + 1, Where.top + 1, Where.right + 2, Where.bottom }, IsLegacy);
+	MakeShadow({ Where.left + 2, Where.bottom + 1, Where.right + 2, Where.bottom + 1 });
+	MakeShadow({ Where.right + 1, Where.top + 1, Where.right + 2, Where.bottom });
 }
 
 void SetColor(int Color)
 {
-	CurColor = colors::ConsoleColorToFarColor(Color);
+	CurColor = colors::NtColorToFarColor(Color);
 }
 
 void SetColor(PaletteColors Color)
@@ -1223,29 +1253,12 @@ void SetRealColor(const FarColor& Color)
 	console.SetTextAttributes(Color);
 }
 
-void ClearScreen(const FarColor& Color)
-{
-	Global->ScrBuf->FillRect({ 0, 0, ScrX, ScrY }, { L' ', Color });
-	if(Global->Opt->WindowMode)
-	{
-		console.ClearExtraRegions(Color, CR_BOTH);
-	}
-	Global->ScrBuf->Flush();
-	console.SetTextAttributes(Color);
-}
-
 const FarColor& GetColor()
 {
 	return CurColor;
 }
 
-
-void ScrollScreen(int Count)
-{
-	Global->ScrBuf->Scroll(Count);
-}
-
-bool DoWeReallyHaveToScroll(short Rows)
+size_t NumberOfEmptyLines(size_t const Desired)
 {
 	/*
 	Q: WTF is this magic?
@@ -1260,13 +1273,19 @@ bool DoWeReallyHaveToScroll(short Rows)
 	This function reads the specified number of the last lines from the screen buffer and checks if there's anything else in them but spaces.
 	*/
 
-	rectangle const Region{ 0, ScrY - Rows + 1, ScrX, ScrY };
+	rectangle const Region{ 0, static_cast<int>(ScrY - Desired + 1), ScrX, ScrY };
 
 	// TODO: matrix_view to avoid copying
-	matrix<FAR_CHAR_INFO> BufferBlock(Rows, ScrX + 1);
+	matrix<FAR_CHAR_INFO> BufferBlock(Desired, ScrX + 1);
 	Global->ScrBuf->Read(Region, BufferBlock);
 
-	return !std::all_of(ALL_CONST_RANGE(BufferBlock.vector()), [](const FAR_CHAR_INFO& i) { return i.Char == L' '; });
+	for (const auto Row: std::views::reverse(BufferBlock))
+	{
+		if (!std::ranges::all_of(Row, [](const FAR_CHAR_INFO& i){ return i.Char == L' '; }))
+			return BufferBlock.height() - 1 - BufferBlock.row_number(Row);
+	}
+
+	return Desired;
 }
 
 size_t string_pos_to_visual_pos(string_view Str, size_t const StringPos, size_t const TabSize, position_parser_state* SavedState)
@@ -1299,8 +1318,8 @@ size_t string_pos_to_visual_pos(string_view Str, size_t const StringPos, size_t 
 		else if (CharWidthEnabled)
 		{
 			const auto Codepoint = encoding::utf16::extract_codepoint(Str.substr(State.StringIndex));
-			CharStringIncrement = Codepoint > std::numeric_limits<wchar_t>::max()? 2 : 1;
-			CharVisualIncrement = char_width::is_wide(Codepoint)? 2 : 1;
+			CharStringIncrement = Codepoint > std::numeric_limits<char16_t>::max()? 2 : 1;
+			CharVisualIncrement = char_width::get(Codepoint);
 		}
 		else
 		{
@@ -1355,8 +1374,8 @@ size_t visual_pos_to_string_pos(string_view Str, size_t const VisualPos, size_t 
 		else if (CharWidthEnabled)
 		{
 			const auto Codepoint = encoding::utf16::extract_codepoint(Str.substr(State.StringIndex));
-			CharVisualIncrement = char_width::is_wide(Codepoint)? 2 : 1;
-			CharStringIncrement = Codepoint > std::numeric_limits<wchar_t>::max()? 2 : 1;
+			CharVisualIncrement = char_width::get(Codepoint);
+			CharStringIncrement = Codepoint > std::numeric_limits<char16_t>::max()? 2 : 1;
 		}
 		else
 		{
@@ -1463,51 +1482,81 @@ bool ScrollBarRequired(size_t Length, unsigned long long ItemsCount)
 
 bool ScrollBar(size_t X1, size_t Y1, size_t Length, unsigned long long TopItem, unsigned long long ItemsCount)
 {
-	return ScrollBarRequired(Length, ItemsCount) && ScrollBarEx(X1, Y1, Length, TopItem, TopItem + Length, ItemsCount);
+	if (!ScrollBarRequired(Length, ItemsCount))
+		return false;
+
+	return ScrollBarEx(X1, Y1, Length, TopItem, TopItem + Length, ItemsCount);
+}
+
+static string MakeScrollBarEx(
+	size_t const Length,
+	unsigned long long const Start,
+	unsigned long long End,
+	unsigned long long const Size,
+	wchar_t const FirstButton,
+	wchar_t const SecondButton,
+	wchar_t const BackgroundChar,
+	wchar_t const SliderChar
+)
+{
+	assert(Start <= End);
+
+	if (Length < 2)
+		return {};
+
+	string Buffer(Length, BackgroundChar);
+	Buffer.front() = FirstButton;
+	Buffer.back() = SecondButton;
+
+	if (Buffer.size() == 2)
+		return Buffer;
+
+	const auto FieldBegin = Buffer.begin() + 1;
+	const auto FieldSize = static_cast<unsigned>(Buffer.size() - 2);
+
+	if (FieldSize == 1)
+	{
+		Buffer[1] = SliderChar;
+		return Buffer;
+	}
+
+	End = std::min(End, Size);
+
+	const auto rounded = [FieldSize](unsigned long long const Nom, unsigned long long const Den)
+	{
+		return static_cast<unsigned long long>(std::round(ToPercent(Nom, Den, FieldSize * 10) / 10.0));
+	};
+
+	auto SliderBegin = std::max(Start? 1ull : 0ull, rounded(Start, Size));
+	if (!SliderBegin && Start)
+		++SliderBegin;
+	if (SliderBegin == FieldSize)
+		--SliderBegin;
+
+	const auto SliderSize = std::max(1ull, rounded(End - Start, Size));
+
+	auto SliderEnd = End == Size? FieldSize : SliderBegin + SliderSize;
+	if (SliderEnd == FieldSize && End < Size)
+	{
+		--SliderEnd;
+		if (SliderBegin > 1)
+			--SliderBegin;
+	}
+
+	if (SliderEnd > SliderBegin)
+		std::fill(FieldBegin + SliderBegin, FieldBegin + SliderEnd, SliderChar);
+
+	return Buffer;
 }
 
 bool ScrollBarEx(size_t X1, size_t Y1, size_t Length, unsigned long long Start, unsigned long long End, unsigned long long Size)
 {
-	if ( Length < 2)
+	const auto Scrollbar = MakeScrollBarEx(Length, Start, End, Size, L'▲', L'▼', BoxSymbols[BS_X_B0], BoxSymbols[BS_X_DB]);
+	if (Scrollbar.empty())
 		return false;
 
-	string Buffer(Length, BoxSymbols[BS_X_B0]);
-	Buffer.front() = L'▲';
-	Buffer.back() = L'▼';
-
-	const auto FieldBegin = Buffer.begin() + 1;
-	const auto FieldEnd = Buffer.end() - 1;
-	const size_t FieldSize = FieldEnd - FieldBegin;
-
-	End = std::min(End, Size);
-
-	auto SliderBegin = FieldBegin, SliderEnd = SliderBegin;
-
-	if (Size && Start < End)
-	{
-		const auto SliderSize = std::max(1ull, (End - Start) * FieldSize / Size);
-
-		if (SliderSize >= FieldSize)
-		{
-			SliderBegin = FieldBegin;
-			SliderEnd = FieldEnd;
-		}
-		else if (End >= Size)
-		{
-			SliderBegin = FieldEnd - SliderSize;
-			SliderEnd = FieldEnd;
-		}
-		else
-		{
-			SliderBegin = std::min(FieldBegin + Start * FieldSize / Size, FieldEnd);
-			SliderEnd = std::min(SliderBegin + SliderSize, FieldEnd);
-		}
-	}
-
-	std::fill(SliderBegin, SliderEnd, BoxSymbols[BS_X_DB]);
-
 	GotoXY(static_cast<int>(X1), static_cast<int>(Y1));
-	VText(Buffer);
+	VText(Scrollbar);
 
 	return true;
 }
@@ -1553,7 +1602,7 @@ string MakeLine(int const Length, line_type const Type, string_view const UserLi
 	}
 	else
 	{
-		std::transform(ALL_CONST_RANGE(Predefined[static_cast<size_t>(Type)]), Buffer, [](size_t i){ return BoxSymbols[i]; });
+		std::ranges::transform(Predefined[static_cast<size_t>(Type)], Buffer, [](size_t i){ return BoxSymbols[i]; });
 	}
 
 	string Result(Length, Buffer[1]);
@@ -1586,11 +1635,11 @@ string make_progressbar(size_t Size, size_t Percent, bool ShowPercent, bool Prop
 	string StrPercent;
 	if (ShowPercent)
 	{
-		StrPercent = format(FSTR(L" {:3}%"sv), Percent);
+		StrPercent = far::format(L" {:3}%"sv, Percent);
 		Size = Size > StrPercent.size()? Size - StrPercent.size(): 0;
 	}
 	string Str(Size, BoxSymbols[BS_X_B0]);
-	const auto Pos = std::min(Percent, size_t{ 100 })* Size / 100;
+	const auto Pos = std::min(Percent, 100uz) * Size / 100;
 	std::fill_n(Str.begin(), Pos, BoxSymbols[BS_X_DB]);
 	if (ShowPercent)
 	{
@@ -1622,7 +1671,7 @@ size_t HiStrlen(string_view const Str)
 
 		const auto Codepoint = First && IsLow? encoding::utf16::extract_codepoint(*First, Char) : Char;
 
-		Result += char_width::is_wide(Codepoint)? 2 : 1;
+		Result += char_width::get(Codepoint);
 		return true;
 	});
 
@@ -1695,6 +1744,12 @@ void AdjustConsoleScreenBufferSize()
 	console.SetScreenBufferSize(Size);
 }
 
+void SetPalette()
+{
+	if (Global->Opt->SetPalette)
+		console.SetPalette(colors::default_palette());
+}
+
 static point& NonMaximisedBufferSize()
 {
 	static point s_Size;
@@ -1738,7 +1793,7 @@ size_t ConsoleChoice(string_view const Message, string_view const Choices, size_
 
 	for (;;)
 	{
-		std::wcout << format(FSTR(L"\n{} ({})? "sv), Message, join(Choices, L"/"sv)) << std::flush;
+		std::wcout << far::format(L"\n{} ({})? "sv, Message, join(L"/"sv, Choices)) << std::flush;
 
 		wchar_t Input;
 		std::wcin.clear();
@@ -1770,9 +1825,10 @@ TEST_CASE("interf.highlight")
 		size_t HotkeyVisualPos;
 		struct
 		{
-			size_t PosVisual;
-			size_t PosReal;
-		};
+			size_t Visual;
+			size_t Real;
+		}
+		Pos;
 	}
 	Tests[]
 	{
@@ -1810,7 +1866,7 @@ TEST_CASE("interf.highlight")
 
 		REQUIRE(HiStrlen(i.Input) == i.Result.size());
 
-		REQUIRE(HiFindRealPos(i.Input, i.PosVisual) == i.PosReal);
+		REQUIRE(HiFindRealPos(i.Input, i.Pos.Visual) == i.Pos.Real);
 	}
 }
 
@@ -1965,5 +2021,62 @@ TEST_CASE("tabs")
 			REQUIRE(i.VisualPos == string_pos_to_visual_pos(Strs[i.Str], i.RealPos, i.TabSize));
 	}
 }
+TEST_CASE("Scrollbar")
+{
+	static const struct
+	{
+		size_t const Length;
+		unsigned long long const Start, Size;
+		string_view Expected;
+	}
+	Tests[]
+	{
+		{},
+		{  1,  0,   1 },
 
+		{  2,  0,   1, L"<>"sv },
+		{  2,  0,   2, L"<>"sv },
+		{  2,  0,   3, L"<>"sv },
+		{  2,  1,   3, L"<>"sv },
+
+		{  3,  0,   4, L"<->"sv },
+
+		{  4,  0,   5, L"<- >"sv },
+		{  4,  1,   5, L"< ->"sv },
+
+		{  5,  0,   6, L"<-- >"sv },
+		{  5,  1,   6, L"< -->"sv },
+		{  5,  0,   7, L"<-- >"sv },
+		{  5,  1,   7, L"< - >"sv },
+		{  5,  0,   8, L"<-- >"sv },
+		{  5,  1,   8, L"< - >"sv },
+		{  5,  2,   8, L"< - >"sv },
+		{  5,  3,   8, L"< -->"sv },
+
+		{ 10,  0,   1, L"<-------->"sv },
+		{ 10,  0,  10, L"<-------->"sv },
+		{ 10,  0,  11, L"<------- >"sv },
+		{ 10,  1,  11, L"< ------->"sv },
+		{ 10,  0,  12, L"<------- >"sv },
+		{ 10,  1,  12, L"< ------ >"sv },
+		{ 10,  2,  12, L"< ------->"sv },
+
+		{ 8,  0,   50, L"<-     >"sv },
+		{ 8,  1,   50, L"< -    >"sv },
+		{ 8, 10,   50, L"< -    >"sv },
+		{ 8, 11,   50, L"< -    >"sv },
+		{ 8, 12,   50, L"< -    >"sv },
+		{ 8, 13,   50, L"<  -   >"sv },
+		{ 8, 41,   50, L"<    - >"sv },
+		{ 8, 42,   50, L"<     ->"sv },
+
+		{ 8, 0, 10000, L"<-     >"sv },
+	};
+
+	for (const auto& i: Tests)
+	{
+		const auto Scrollbar = MakeScrollBarEx(i.Length, i.Start, i.Start + i.Length, i.Size, L'<', L'>', L' ', L'-');
+		REQUIRE(i.Expected == Scrollbar);
+	}
+}
 #endif

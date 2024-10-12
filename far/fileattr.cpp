@@ -41,11 +41,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "flink.hpp"
 #include "lang.hpp"
 #include "fileowner.hpp"
-#include "exception.hpp"
 #include "stddlg.hpp"
 #include "log.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.fs.hpp"
 
 // Common:
@@ -72,7 +72,7 @@ static auto without_ro(string_view const Name, os::fs::attributes const Attribut
 
 			if (Attributes & Mask && !os::fs::set_file_attributes(Name, Attributes)) //BUGBUG
 			{
-				LOGWARNING(L"set_file_attributes({}): {}"sv, Name, last_error());
+				LOGWARNING(L"set_file_attributes({}): {}"sv, Name, os::last_error());
 			}
 		};
 
@@ -138,7 +138,6 @@ void ESetFileTime(
 	os::chrono::time_point const* const CreationTime,
 	os::chrono::time_point const* const LastAccessTime,
 	os::chrono::time_point const* const ChangeTime,
-	os::fs::attributes const CurrentAttributes,
 	bool& SkipErrors)
 {
 	if (!LastWriteTime && !CreationTime && !LastAccessTime && !ChangeTime)
@@ -146,7 +145,7 @@ void ESetFileTime(
 
 	const auto Implementation = [&]
 	{
-		const os::fs::file File(Name, GENERIC_WRITE, os::fs::file_share_all, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
+		const os::fs::file File(Name, FILE_WRITE_ATTRIBUTES, os::fs::file_share_all, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
 		if (!File)
 			return false;
 
@@ -154,7 +153,7 @@ void ESetFileTime(
 	};
 
 	retryable_ui_operation(
-		without_ro(Name, CurrentAttributes, Implementation),
+		Implementation,
 		Name, lng::MSetAttrTimeCannotFor, SkipErrors);
 }
 
@@ -222,6 +221,7 @@ void enum_attributes(function_ref<bool(os::fs::attributes, wchar_t)> const Pred)
 		{ L'‼', FILE_ATTRIBUTE_RECALL_ON_OPEN },        // Unknown symbol
 		{ L'!', FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS }, // Unknown symbol
 		{ L'B', FILE_ATTRIBUTE_STRICTLY_SEQUENTIAL },   // "SMR Blob" in attrib.exe
+		{ L'*', FILE_ATTRIBUTE_DEVICE },                // Unknown symbol
 	};
 
 	for (const auto& [Letter, Attr]: AttrMap)

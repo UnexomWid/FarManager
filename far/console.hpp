@@ -45,7 +45,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "common/2d/point.hpp"
 #include "common/2d/rectangle.hpp"
 #include "common/nifty_counter.hpp"
-#include "common/range.hpp"
 
 // External:
 
@@ -59,7 +58,7 @@ enum CLEAR_REGION
 };
 
 wchar_t ReplaceControlCharacter(wchar_t Char);
-void sanitise_pair(FAR_CHAR_INFO& First, FAR_CHAR_INFO& Second);
+bool sanitise_pair(FAR_CHAR_INFO& First, FAR_CHAR_INFO& Second);
 bool get_console_screen_buffer_info(HANDLE ConsoleOutput, CONSOLE_SCREEN_BUFFER_INFO* ConsoleScreenBufferInfo);
 
 namespace console_detail
@@ -97,7 +96,7 @@ namespace console_detail
 		string GetTitle() const;
 		bool SetTitle(string_view Title) const;
 
-		bool GetKeyboardLayoutName(string &strName) const;
+		HKL GetKeyboardLayout() const;
 
 		uintptr_t GetInputCodepage() const;
 		bool SetInputCodepage(uintptr_t Codepage) const;
@@ -109,19 +108,19 @@ namespace console_detail
 
 		bool GetMode(HANDLE ConsoleHandle, DWORD& Mode) const;
 		bool SetMode(HANDLE ConsoleHandle, DWORD Mode) const;
+		std::optional<DWORD> UpdateMode(HANDLE ConsoleHandle, DWORD ToSet, DWORD ToClear) const;
 
 		bool IsVtSupported() const;
 
-		bool PeekInput(span<INPUT_RECORD> Buffer, size_t& NumberOfEventsRead) const;
 		bool PeekOneInput(INPUT_RECORD& Record) const;
-		bool ReadInput(span<INPUT_RECORD> Buffer, size_t& NumberOfEventsRead) const;
 		bool ReadOneInput(INPUT_RECORD& Record) const;
-		bool WriteInput(span<INPUT_RECORD> Buffer, size_t& NumberOfEventsWritten) const;
+		bool WriteInput(std::span<INPUT_RECORD> Buffer, size_t& NumberOfEventsWritten) const;
 		bool ReadOutput(matrix<FAR_CHAR_INFO>& Buffer, point BufferCoord, rectangle const& ReadRegionRelative) const;
 		bool ReadOutput(matrix<FAR_CHAR_INFO>& Buffer, const rectangle& ReadRegion) const { return ReadOutput(Buffer, {}, ReadRegion); }
 		bool WriteOutput(matrix<FAR_CHAR_INFO>& Buffer, point BufferCoord, rectangle const& WriteRegionRelative) const;
 		bool WriteOutput(matrix<FAR_CHAR_INFO>& Buffer, rectangle const& WriteRegion) const { return WriteOutput(Buffer, {}, WriteRegion); }
-		bool Read(string& Buffer, size_t& Size) const;
+		bool WriteOutputGather(matrix<FAR_CHAR_INFO>& Buffer, std::span<rectangle const> WriteRegions) const;
+		bool Read(std::span<wchar_t> Buffer, size_t& Size) const;
 		bool Write(string_view Str) const;
 		bool Commit() const;
 
@@ -157,13 +156,15 @@ namespace console_detail
 
 		bool GetDisplayMode(DWORD& Mode) const;
 
-		point GetLargestWindowSize() const;
+		point GetLargestWindowSize(HANDLE ConsoleOutput) const;
 
 		bool SetActiveScreenBuffer(HANDLE ConsoleOutput);
 
 		HANDLE GetActiveScreenBuffer() const;
 
 		bool ClearExtraRegions(const FarColor& Color, int Mode) const;
+
+		bool Clear(const FarColor& Color) const;
 
 		bool ScrollWindow(int Lines, int Columns = 0) const;
 
@@ -173,7 +174,6 @@ namespace console_detail
 
 		bool IsFullscreenSupported() const;
 
-		void ResetPosition() const;
 		bool ResetViewportPosition() const;
 
 		bool ScrollNonClientArea(size_t NumLines, const FAR_CHAR_INFO& Fill) const;
@@ -184,37 +184,70 @@ namespace console_detail
 		bool IsScrollbackPresent() const;
 
 		[[nodiscard]]
-		bool IsVtEnabled() const;
+		bool IsVtActive() const;
 
 		[[nodiscard]]
 		bool ExternalRendererLoaded() const;
 
 		[[nodiscard]]
-		bool IsWidePreciseExpensive(unsigned int Codepoint, bool ClearCacheOnly = false);
+		size_t GetWidthPreciseExpensive(char32_t Codepoint);
+		void ClearWideCache();
 
-		bool GetPalette(std::array<COLORREF, 16>& Palette) const;
+		bool GetPalette(std::array<COLORREF, 256>& Palette) const;
+		bool SetPalette(std::array<COLORREF, 256> const& Palette) const;
 
 		static void EnableWindowMode(bool Value);
 		static void EnableVirtualTerminal(bool Value);
+
+		void set_progress_state(TBPFLAG State) const;
+		void set_progress_value(TBPFLAG State, size_t Percent) const;
+
+		void stash_output() const;
+		void unstash_output(rectangle Coordinates) const;
+
+		void start_prompt() const;
+		void start_command() const;
+		void start_output() const;
+		void command_finished() const;
+		void command_finished(int ExitCode) const;
+		void command_not_found(string_view Command) const;
+
+		[[nodiscard]]
+		short GetDelta() const;
+
+		class input_queue_inspector
+		{
+		public:
+			bool search(function_ref<bool(INPUT_RECORD const&)> Predicate);
+
+		private:
+			std::vector<INPUT_RECORD> m_Buffer{ 256 };
+		};
 
 	private:
 		class implementation;
 		friend class implementation;
 
-		short GetDelta() const;
+		[[nodiscard]]
+		bool IsVtEnabled() const;
 		bool ScrollScreenBuffer(rectangle const& ScrollRectangle, point DestinationOrigin, const FAR_CHAR_INFO& Fill) const;
 		bool GetCursorRealPosition(point& Position) const;
 		bool SetCursorRealPosition(point Position) const;
 
+		bool send_vt_command(string_view Command) const;
+
+		std::optional<KEY_EVENT_RECORD> queued() const;
+
 		HANDLE m_OriginalInputHandle;
 		HANDLE m_ActiveConsoleScreenBuffer{};
 		mutable string m_Title;
-		mutable int m_FileHandle{ -1 };
 
 		class stream_buffers_overrider;
 		std::unique_ptr<stream_buffers_overrider> m_StreamBuffersOverrider;
 
 		os::handle m_WidthTestScreen;
+
+		KEY_EVENT_RECORD mutable m_QueuedKeys{};
 	};
 }
 

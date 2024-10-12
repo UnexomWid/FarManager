@@ -127,12 +127,12 @@ class multifunction
 {
 public:
 	MOVABLE(multifunction);
-	COPY_AND_MOVE(multifunction, const multifunction&)
+	COPY_ASSIGNABLE_SWAP(multifunction)
 
 	multifunction() = default;
 
 	template<typename callable_type>
-	multifunction(const callable_type& Callable):
+	explicit(false) multifunction(const callable_type& Callable):
 		m_Callable(std::make_unique<detail::callable<callable_type, signatures...>>(Callable))
 	{
 	}
@@ -142,14 +142,12 @@ public:
 	{
 	}
 
-	template<typename... args>
-	auto operator()(args&&... Args)
+	auto operator()(auto&&... Args)
 	{
 		return (*m_Callable)(FWD(Args)...);
 	}
 
-	template<typename... args>
-	auto operator()(args&&... Args) const
+	auto operator()(auto&&... Args) const
 	{
 		return (*m_Callable)(FWD(Args)...);
 	}

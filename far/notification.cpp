@@ -52,10 +52,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 static const string_view EventNames[]
 {
-	WSTRVIEW(update_intl),
-	WSTRVIEW(update_power),
-	WSTRVIEW(update_devices),
-	WSTRVIEW(update_environment),
+	WIDE_SV_LITERAL(update_intl),
+	WIDE_SV_LITERAL(update_power),
+	WIDE_SV_LITERAL(update_devices),
+	WIDE_SV_LITERAL(update_environment),
 };
 
 static_assert(std::size(EventNames) == event_id_count);
@@ -72,19 +72,19 @@ void message_manager::commit_add()
 	handlers_map PendingHandlers;
 
 	{
-		SCOPED_ACTION(std::lock_guard)(m_PendingLock);
+		SCOPED_ACTION(std::scoped_lock)(m_PendingLock);
 		PendingHandlers = std::move(m_PendingHandlers);
 	}
 
 	{
-		SCOPED_ACTION(std::lock_guard)(m_ActiveLock);
+		SCOPED_ACTION(std::scoped_lock)(m_ActiveLock);
 		m_ActiveHandlers.merge(PendingHandlers);
 	}
 }
 
 void message_manager::commit_remove()
 {
-	SCOPED_ACTION(std::lock_guard)(m_ActiveLock);
+	SCOPED_ACTION(std::scoped_lock)(m_ActiveLock);
 	std::erase_if(m_ActiveHandlers, [](handlers_map::value_type const& Handler)
 	{
 		return !Handler.second;
@@ -93,19 +93,19 @@ void message_manager::commit_remove()
 
 message_manager::handlers_map::iterator message_manager::subscribe(UUID const& EventId, const detail::event_handler& EventHandler)
 {
-	SCOPED_ACTION(std::lock_guard)(m_PendingLock);
+	SCOPED_ACTION(std::scoped_lock)(m_PendingLock);
 	return m_PendingHandlers.emplace(uuid::str(EventId), &EventHandler);
 }
 
 message_manager::handlers_map::iterator message_manager::subscribe(event_id EventId, const detail::event_handler& EventHandler)
 {
-	SCOPED_ACTION(std::lock_guard)(m_PendingLock);
+	SCOPED_ACTION(std::scoped_lock)(m_PendingLock);
 	return m_PendingHandlers.emplace(EventNames[EventId], &EventHandler);
 }
 
 message_manager::handlers_map::iterator message_manager::subscribe(string_view const EventName, const detail::event_handler& EventHandler)
 {
-	SCOPED_ACTION(std::lock_guard)(m_PendingLock);
+	SCOPED_ACTION(std::scoped_lock)(m_PendingLock);
 	return m_PendingHandlers.emplace(EventName, &EventHandler);
 }
 
@@ -116,19 +116,40 @@ void message_manager::unsubscribe(handlers_map::iterator HandlerIterator)
 
 void message_manager::notify(UUID const& EventId, std::any&& Payload)
 {
-	m_Messages.emplace(uuid::str(EventId), std::move(Payload));
-	main_loop_process_messages();
+	return notify(uuid::str(EventId), std::move(Payload));
 }
 
 void message_manager::notify(event_id const EventId, std::any&& Payload)
 {
-	m_Messages.emplace(EventNames[EventId], std::move(Payload));
-	main_loop_process_messages();
+	return notify(EventNames[EventId], std::move(Payload));
 }
 
 void message_manager::notify(string_view const EventId, std::any&& Payload)
 {
-	m_Messages.emplace(EventId, std::move(Payload));
+	{
+		SCOPED_ACTION(std::scoped_lock)(m_QueueLock);
+
+		if (!Payload.has_value())
+		{
+			// Stateless events are used to refresh various components.
+			// We can safely deduplicate them and reduce spam.
+
+			// Linear, but should be fine. It's not like we have thousands of them here.
+			const auto Size = m_Messages.size();
+			std::erase_if(m_Messages, [&](message const& Item)
+			{
+				return !Item.Payload.has_value() && Item.Id == EventId;
+			});
+
+			if (const auto NewSize = m_Messages.size(); NewSize < Size)
+			{
+				LOGTRACE(L"Queue deduplication for {}: {} messages removed"sv, EventId, Size - NewSize);
+			}
+		}
+
+		m_Messages.emplace_back(message{ string{ EventId }, std::move(Payload) });
+	}
+
 	main_loop_process_messages();
 }
 
@@ -145,18 +166,24 @@ bool message_manager::dispatch()
 	std::unordered_map<const detail::event_handler*, bool> EligibleHandlers;
 
 	message_queue::value_type EventData;
-	while (m_Messages.try_pop(EventData))
-	{
-		const auto& [EventId, Payload] = EventData;
 
-		// For purist clang /o
-		// TODO: remove once we enable C++20
-		const auto& EventIdRef = EventId;
+	for (;;)
+	{
+		{
+			SCOPED_ACTION(std::scoped_lock)(m_QueueLock);
+			if (m_Messages.empty())
+				break;
+
+			EventData = std::move(m_Messages.front());
+			m_Messages.pop_front();
+		}
+
+		const auto& [EventId, Payload] = EventData;
 
 		const auto find_eligible_from = [&](handlers_map const& Handlers)
 		{
-			const auto& [EqualBegin, EqualEnd] = Handlers.equal_range(EventIdRef);
-			for (const auto& [Key, Value]: range(EqualBegin, EqualEnd))
+			const auto [Begin, End] = Handlers.equal_range(EventId);
+			for (const auto& [Key, Value]: std::ranges::subrange(Begin, End))
 			{
 				EligibleHandlers.emplace(Value, false);
 			}
@@ -165,12 +192,12 @@ bool message_manager::dispatch()
 		EligibleHandlers.clear();
 
 		{
-			SCOPED_ACTION(std::lock_guard)(m_ActiveLock);
+			SCOPED_ACTION(std::scoped_lock)(m_ActiveLock);
 			find_eligible_from(m_ActiveHandlers);
 		}
 
 		{
-			SCOPED_ACTION(std::lock_guard)(m_PendingLock);
+			SCOPED_ACTION(std::scoped_lock)(m_PendingLock);
 			find_eligible_from(m_PendingHandlers);
 		}
 
@@ -224,7 +251,17 @@ bool message_manager::dispatch()
 	return Result;
 }
 
-string listener::CreateEventName()
+void message_manager::enable_power_notifications()
 {
-	return uuid::str(os::uuid::generate());
+	m_Window->enable_power_notifications();
+}
+
+void message_manager::disable_power_notifications()
+{
+	m_Window->disable_power_notifications();
+}
+
+string listener::CreateEventName(string_view const ScopeName)
+{
+	return concat(ScopeName, L"::"sv, uuid::str(os::uuid::generate()));
 }

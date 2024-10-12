@@ -113,7 +113,7 @@ InfoList::InfoList(private_tag, window_ptr Owner):
 	OldWrapMode(),
 	OldWrapType(),
 	SectionState(ILSS_SIZE),
-	PowerListener(update_power, [&]{ if (Global->Opt->InfoPanel.ShowPowerStatus && IsVisible() && SectionState[ILSS_POWERSTATUS].Show) { Redraw(); }})
+	PowerListener([&]{ if (Global->Opt->InfoPanel.ShowPowerStatus && IsVisible() && SectionState[ILSS_POWERSTATUS].Show) { Redraw(); }})
 {
 	m_Type = panel_type::INFO_PANEL;
 	if (Global->Opt->InfoPanel.strShowStatusInfo.empty())
@@ -220,7 +220,7 @@ void InfoList::DisplayObject()
 		PrintInfo(strComputerName);
 
 		os::netapi::ptr<SERVER_INFO_101> ServerInfo;
-		if (NetServerGetInfo(nullptr, 101, edit_as<BYTE**>(&ptr_setter(ServerInfo))) == NERR_Success)
+		if (NetServerGetInfo(nullptr, 101, std::bit_cast<BYTE**>(&ptr_setter(ServerInfo))) == NERR_Success)
 		{
 			if(ServerInfo->sv101_comment && *ServerInfo->sv101_comment)
 			{
@@ -246,7 +246,7 @@ void InfoList::DisplayObject()
 		PrintInfo(DisplayName);
 
 		os::netapi::ptr<USER_INFO_1> UserInfo;
-		if (UserNameRead && NetUserGetInfo(nullptr, UserLogonName.c_str(), 1, edit_as<BYTE**>(&ptr_setter(UserInfo))) == NERR_Success)
+		if (UserNameRead && NetUserGetInfo(nullptr, UserLogonName.c_str(), 1, std::bit_cast<BYTE**>(&ptr_setter(UserInfo))) == NERR_Success)
 		{
 			if(UserInfo->usri1_comment && *UserInfo->usri1_comment)
 			{
@@ -278,6 +278,10 @@ void InfoList::DisplayObject()
 			PrintText(lng::MInfoUserAccessLevel);
 			PrintInfo(LabelId);
 		}
+
+		GotoXY(m_Where.left + 2, CurY++);
+		PrintText(lng::MInfoUserAccessElevated);
+		PrintInfo(os::security::is_admin()? lng::MYes : lng::MNo);
 	}
 
 	string SectionTitle;
@@ -376,8 +380,8 @@ void InfoList::DisplayObject()
 			if (UseAssocPath)
 				append(SectionTitle, L' ', strAssocPath);
 
-			strDiskNumber = format(
-				FSTR(L"{:04X}-{:04X}"sv),
+			strDiskNumber = far::format(
+				L"{:04X}-{:04X}"sv,
 				extract_integer<WORD, 1>(VolumeNumber),
 				extract_integer<WORD, 0>(VolumeNumber)
 			);
@@ -400,28 +404,33 @@ void InfoList::DisplayObject()
 		}
 		else
 		{
-			str = FileSizeToStr(Size, 16, COLFLAGS_FLOATSIZE | COLFLAGS_SHOW_MULTIPLIER);
+			str = FileSizeToStr(Size, 0, COLFLAGS_FLOATSIZE | COLFLAGS_SHOW_MULTIPLIER);
 			if (str.back() != bytes_suffix[0])
 				str += bytes_suffix;
 		}
 		return str;
 	};
 
+	const auto PrintMetricText = [&](lng const Kind, lng const Metric)
+	{
+		PrintText(far::format(L"{}, {}"sv, msg(Kind), msg(Metric)));
+	};
+
+	const auto PrintMetric = [&](lng const Kind, unsigned long long const Total, unsigned long long const Available)
+	{
+		GotoXY(m_Where.left + 2, CurY++);
+		PrintMetricText(Kind, lng::MInfoMetricTotal);
+		PrintInfo(size2str(Total));
+		GotoXY(m_Where.left + 2, CurY++);
+		PrintMetricText(Kind, lng::MInfoMetricAvailable);
+		PrintInfo(far::format(L"{}%, {}"sv, ToPercent(Available, Total), size2str(Available)));
+	};
+
 	if (SectionState[ILSS_DISKINFO].Show)
 	{
 		/* #2.2 - disk info: size */
-		unsigned long long TotalSize, UserFree;
-
-		if (os::fs::get_disk_size(m_CurDir,&TotalSize, nullptr, &UserFree))
-		{
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoDiskTotal);
-			PrintInfo(size2str(TotalSize));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoDiskFree);
-			PrintInfo(size2str(UserFree));
-		}
+		if (unsigned long long UserTotal, UserFree; os::fs::get_disk_size(m_CurDir, &UserTotal, {}, &UserFree))
+			PrintMetric(lng::MInfoDiskSpace, UserTotal, UserFree);
 
 		/* #4 - disk info: label & SN */
 		GotoXY(m_Where.left + 2, CurY++);
@@ -441,44 +450,16 @@ void InfoList::DisplayObject()
 		MEMORYSTATUSEX ms{ sizeof(ms) };
 		if (GlobalMemoryStatusEx(&ms))
 		{
-			if (!ms.dwMemoryLoad)
-				ms.dwMemoryLoad=100-ToPercent(ms.ullAvailPhys+ms.ullAvailPageFile,ms.ullTotalPhys+ms.ullTotalPageFile);
+			PrintMetric(lng::MInfoMemoryCommittable, ms.ullTotalPageFile, ms.ullAvailPageFile);
+			PrintMetric(lng::MInfoMemoryAddressable, ms.ullTotalVirtual, ms.ullAvailVirtual);
+			PrintMetric(lng::MInfoMemoryPhysical, ms.ullTotalPhys, ms.ullAvailPhys);
 
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoMemoryLoad);
-			PrintInfo(str(ms.dwMemoryLoad) + L'%');
-
-			ULONGLONG TotalMemoryInKilobytes=0;
-			if(imports.GetPhysicallyInstalledSystemMemory && imports.GetPhysicallyInstalledSystemMemory(&TotalMemoryInKilobytes))
+			if (ULONGLONG TotalMemoryInKilobytes; imports.GetPhysicallyInstalledSystemMemory && imports.GetPhysicallyInstalledSystemMemory(&TotalMemoryInKilobytes))
 			{
 				GotoXY(m_Where.left + 2, CurY++);
-				PrintText(lng::MInfoMemoryInstalled);
+				PrintMetricText(lng::MInfoMemoryPhysical, lng::MInfoMetricMemoryInstalled);
 				PrintInfo(size2str(TotalMemoryInKilobytes << 10));
 			}
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoMemoryTotal);
-			PrintInfo(size2str(ms.ullTotalPhys));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoMemoryFree);
-			PrintInfo(size2str(ms.ullAvailPhys));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoVirtualTotal);
-			PrintInfo(size2str(ms.ullTotalVirtual));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoVirtualFree);
-			PrintInfo(size2str(ms.ullAvailVirtual));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoPageFileTotal);
-			PrintInfo(size2str(ms.ullTotalPageFile));
-
-			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoPageFileFree);
-			PrintInfo(size2str(ms.ullAvailPageFile));
 		}
 	}
 
@@ -505,42 +486,48 @@ void InfoList::DisplayObject()
 			PrintInfo(msg(MsgID));
 
 			GotoXY(m_Where.left + 2, CurY++);
-			PrintText(lng::MInfoPowerStatusBCLifePercent);
-			if (PowerStatus.BatteryLifePercent > 100)
-				PrintInfo(msg(lng::MInfoPowerStatusBCLifePercentUnknown));
-			else
-				PrintInfo(str(PowerStatus.BatteryLifePercent) + L'%');
 
-			GotoXY(m_Where.left + 2, CurY++);
 			PrintText(lng::MInfoPowerStatusBC);
-			// PowerStatus.BatteryFlag == 0: The value is zero if the battery is not being charged and the battery capacity is between low and high.
-			if (!PowerStatus.BatteryFlag || PowerStatus.BatteryFlag == BATTERY_FLAG_UNKNOWN)
+
+			if (PowerStatus.BatteryFlag == BATTERY_FLAG_UNKNOWN)
+			{
 				PrintInfo(msg(lng::MInfoPowerStatusBCUnknown));
-			else if (PowerStatus.BatteryFlag & BATTERY_FLAG_NO_BATTERY)
-				PrintInfo(msg(lng::MInfoPowerStatusBCNoSysBat));
+			}
 			else
 			{
-				auto strOutStr =
-					PowerStatus.BatteryFlag & BATTERY_FLAG_HIGH? msg(lng::MInfoPowerStatusBCHigh) :
-					PowerStatus.BatteryFlag & BATTERY_FLAG_LOW? msg(lng::MInfoPowerStatusBCLow) :
-					PowerStatus.BatteryFlag & BATTERY_FLAG_CRITICAL? msg(lng::MInfoPowerStatusBCCritical) :
-					L""s;
+				auto ChargeStatus = lng::MInfoPowerStatusBCUnknown;
+				switch (PowerStatus.BatteryFlag & (BATTERY_FLAG_HIGH | BATTERY_FLAG_LOW | BATTERY_FLAG_CRITICAL | BATTERY_FLAG_NO_BATTERY))
+				{
+				case 0:                        ChargeStatus = lng::MInfoPowerStatusBCMedium;    break;
+				case BATTERY_FLAG_HIGH:        ChargeStatus = lng::MInfoPowerStatusBCHigh;      break;
+				case BATTERY_FLAG_LOW:         ChargeStatus = lng::MInfoPowerStatusBCLow;       break;
+				case BATTERY_FLAG_CRITICAL:    ChargeStatus = lng::MInfoPowerStatusBCCritical;  break;
+				case BATTERY_FLAG_NO_BATTERY:  ChargeStatus = lng::MInfoPowerStatusBCNoSysBat;  break;
+				}
+
+				auto strOutStr = far::format(L"{} ({})"sv,
+					msg(ChargeStatus),
+					PowerStatus.BatteryLifePercent > 100?
+						msg(lng::MInfoPowerStatusBCLifePercentUnknown) :
+						str(PowerStatus.BatteryLifePercent) + L'%'
+				);
 
 				if (PowerStatus.BatteryFlag & BATTERY_FLAG_CHARGING)
-				{
-					if (!strOutStr.empty())
-						strOutStr += L' ';
-					strOutStr += msg(lng::MInfoPowerStatusBCCharging);
-				}
+					append(strOutStr, L", "sv, msg(lng::MInfoPowerStatusBCCharging));
+
 				PrintInfo(strOutStr);
 			}
 
-			const auto GetBatteryTime = [](size_t SecondsCount)
+			const auto GetBatteryTime = [&](size_t SecondsCount)
 			{
 				if (SecondsCount == BATTERY_LIFE_UNKNOWN)
-					return string(msg(lng::MInfoPowerStatusUnknown));
+				{
+					return PowerStatus.ACLineStatus == AC_LINE_ONLINE?
+						L"-"s :
+						msg(lng::MInfoPowerStatusUnknown);
+				}
 
-				return ConvertDurationToHMS(std::chrono::seconds{SecondsCount});
+				return duration_to_string_hms(std::chrono::seconds{SecondsCount});
 			};
 
 			GotoXY(m_Where.left + 2, CurY++);
@@ -744,11 +731,14 @@ bool InfoList::ProcessKey(const Manager::Key& Key)
 			{
 				for (const auto& i: enum_tokens_with_quotes(Global->Opt->InfoPanel.strFolderInfoFiles.Get(), L",;"sv))
 				{
-					if (i.find_first_of(L"*?"sv) == string::npos)
-					{
-						FileEditor::create(i, CP_DEFAULT, FFILEEDIT_CANNEWFILE | FFILEEDIT_ENABLEF6);
-						break;
-					}
+					if (i.empty())
+						continue;
+
+					if (i.find_first_of(L"*?"sv) != string::npos)
+						continue;
+
+					FileEditor::create(i, CP_DEFAULT, FFILEEDIT_CANNEWFILE | FFILEEDIT_ENABLEF6);
+					break;
 				}
 			}
 
@@ -820,7 +810,7 @@ bool InfoList::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 		{ ILSS_POWERSTATUS,     true },
 	};
 
-	if ((MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) && !(MouseEvent->dwEventFlags & MOUSE_MOVED))
+	if ((MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) && IsMouseButtonEvent(MouseEvent->dwEventFlags))
 	{
 		for (const auto& [Section, Enabled]: Sections)
 		{
@@ -935,6 +925,9 @@ bool InfoList::ShowDirDescription(int YPos)
 
 	for (const auto& i: enum_tokens_with_quotes(Global->Opt->InfoPanel.strFolderInfoFiles.Get(), L",;"sv))
 	{
+		if (i.empty())
+			continue;
+
 		strFullDizName.resize(DirSize);
 		append(strFullDizName, i);
 
@@ -963,7 +956,7 @@ bool InfoList::ShowPluginDescription(int YPos) const
 	AnotherPanel->GetOpenPanelInfo(&Info);
 
 	int Y=YPos;
-	for (const auto& InfoLine: span(Info.InfoLines, Info.InfoLinesNumber))
+	for (const auto& InfoLine: std::span(Info.InfoLines, Info.InfoLinesNumber))
 	{
 		if (Y >= m_Where.bottom)
 			break;
@@ -1094,6 +1087,17 @@ void InfoList::DynamicUpdateKeyBar() const
 	}
 
 	Keybar.SetCustomLabels(KBA_INFO);
+}
+
+InfoList::power_listener::power_listener(std::function<void()> EventHandler):
+	listener(update_power, std::move(EventHandler))
+{
+	message_manager::instance().enable_power_notifications();
+}
+
+InfoList::power_listener::~power_listener()
+{
+	message_manager::instance().disable_power_notifications();
 }
 
 Viewer* InfoList::GetViewer()

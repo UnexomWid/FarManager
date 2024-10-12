@@ -54,8 +54,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 global::global() :
 	g_strFarModuleName(os::fs::get_current_process_file_name()),
-	GlobalSearchCaseFold(search_case_fold::icase),
-	ErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX),
 	m_MainThreadId(GetCurrentThreadId()),
 	m_MainThreadHandle(os::OpenCurrentThread()),
 	m_FarStartTime(std::chrono::steady_clock::now()),
@@ -76,10 +74,9 @@ std::chrono::steady_clock::duration global::FarUpTime() const
 	return std::chrono::steady_clock::now() - m_FarStartTime;
 }
 
-void global::StoreSearchString(string_view const Str, bool Hex)
+void global::FolderChanged()
 {
-	m_SearchHex = Hex;
-	m_SearchString = Str;
+	WindowManager->FolderChanged();
 }
 
 global::far_clock::far_clock()
@@ -110,7 +107,7 @@ void global::far_clock::update(bool const Force)
 	if (!Force && Value == m_LastValue)
 		return;
 
-	m_CurrentTime = os::chrono::format_time(Now);
+	m_CurrentTime = os::chrono::wall_time(Now);
 	m_LastValue = Value;
 
 	auto time = os::chrono::nt_clock::to_time_t(Now);

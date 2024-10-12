@@ -42,6 +42,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "scantree.hpp"
 #include "constitle.hpp"
 #include "filepanels.hpp"
+#include "filelist.hpp"
 #include "panel.hpp"
 #include "vmenu.hpp"
 #include "vmenu2.hpp"
@@ -56,7 +57,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "strmix.hpp"
 #include "processname.hpp"
 #include "interf.hpp"
-#include "message.hpp"
 #include "uuids.far.hpp"
 #include "configdb.hpp"
 #include "FarDlgBuilder.hpp"
@@ -74,6 +74,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "exception_handler.hpp"
 
 // Platform:
+#include "platform.hpp"
 #include "platform.env.hpp"
 #include "platform.memory.hpp"
 
@@ -125,7 +126,7 @@ static void EnsureLuaCpuCompatibility()
 	if (IsProcessorFeaturePresent(PF_XMMI64_INSTRUCTIONS_AVAILABLE))
 		return;
 
-	static os::rtdl::module LuaModule(path::join(Global->g_strFarPath, L"legacy"sv, L"lua51.dll"sv));
+	static os::rtdl::module LuaModule(path::join(Global->g_strFarPath, L"Legacy"sv, L"lua51.dll"sv));
 	// modules are lazy loaded
 	(void)LuaModule.operator bool();
 #endif
@@ -137,6 +138,12 @@ PluginManager::PluginManager():
 #endif // NO_WRAPPER
 	m_PluginsLoaded()
 {
+}
+
+void PluginManager::NotifyExitLuaMacro() const
+{
+	if (const auto LuaMacro = m_Plugins.find(Global->Opt->KnownIDs.Luamacro.Id); LuaMacro != m_Plugins.cend())
+		LuaMacro->second->NotifyExit();
 }
 
 void PluginManager::UnloadPlugins()
@@ -157,7 +164,7 @@ void PluginManager::UnloadPlugins()
 
 	if (Luamacro)
 	{
-		Luamacro->Unload(true);
+		Luamacro->Unload(false);
 	}
 
 	// some plugins might still have dialogs (if DialogFree wasn't called)
@@ -170,6 +177,7 @@ Plugin* PluginManager::AddPlugin(std::unique_ptr<Plugin>&& pPlugin)
 	const auto [Iterator, IsEmplaced] = m_Plugins.try_emplace(pPlugin->Id());
 	if (!IsEmplaced)
 	{
+		LOGWARNING(L"Plugin \"{}\" is already loaded from {}, ignoring {}"sv, Iterator->second->Title(), Iterator->second->ModuleName(), pPlugin->ModuleName());
 		pPlugin->Unload(true);
 		return nullptr;
 	}
@@ -223,7 +231,7 @@ bool PluginManager::RemovePlugin(const Plugin* pPlugin)
 		}
 	}
 #endif // NO_WRAPPER
-	SortedPlugins.erase(std::find(ALL_CONST_RANGE(SortedPlugins), pPlugin));
+	SortedPlugins.erase(std::ranges::find(SortedPlugins, pPlugin));
 	m_Plugins.erase(pPlugin->Id());
 	return true;
 }
@@ -233,7 +241,7 @@ Plugin* PluginManager::LoadPlugin(const string& FileName, const os::fs::find_dat
 {
 	std::unique_ptr<Plugin> pPlugin;
 
-	if (!std::any_of(CONST_RANGE(PluginFactories, i) { return (pPlugin = i->CreatePlugin(FileName)) != nullptr; }))
+	if (std::ranges::none_of(PluginFactories, [&](plugin_factory_ptr const& i){ return (pPlugin = i->CreatePlugin(FileName)) != nullptr; }))
 		return nullptr;
 
 	auto Result = LoadToMem? false : pPlugin->LoadFromCache(FindData);
@@ -271,7 +279,7 @@ Plugin* PluginManager::LoadPluginExternal(const string& ModuleName, bool LoadToM
 		{
 			if (!pPlugin->bPendingRemove)
 			{
-				UnloadedPlugins.emplace_back(pPlugin);
+				UnloadedPlugins.emplace(pPlugin);
 			}
 			return nullptr;
 		}
@@ -288,9 +296,9 @@ Plugin* PluginManager::LoadPluginExternal(const string& ModuleName, bool LoadToM
 	return pPlugin;
 }
 
-int PluginManager::UnloadPlugin(Plugin* pPlugin, int From)
+bool PluginManager::UnloadPlugin(Plugin* pPlugin, int From)
 {
-	int nResult = FALSE;
+	bool Result = false;
 
 	if (pPlugin && (From != iExitFAR))   //схитрим, если упали в EXITFAR, не полезем в рекурсию, мы и так в Unload
 	{
@@ -306,7 +314,7 @@ int PluginManager::UnloadPlugin(Plugin* pPlugin, int From)
 
 		const auto IsPanelPlugin = pPlugin->IsPanelPlugin();
 
-		nResult = pPlugin->Unload(true);
+		Result = pPlugin->Unload(true);
 
 		pPlugin->WorkFlags.Set(PIWF_DONTLOADAGAIN);
 
@@ -321,30 +329,30 @@ int PluginManager::UnloadPlugin(Plugin* pPlugin, int From)
 			AnotherPanel->Redraw();
 		}
 
-		UnloadedPlugins.emplace_back(pPlugin);
+		UnloadedPlugins.emplace(pPlugin);
 	}
 
-	return nResult;
+	return Result;
 }
 
-bool PluginManager::IsPluginUnloaded(const Plugin* pPlugin) const
+bool PluginManager::IsPluginUnloaded(Plugin* pPlugin) const
 {
-	return contains(UnloadedPlugins, pPlugin);
+	return UnloadedPlugins.contains(pPlugin);
 }
 
 bool PluginManager::UnloadPluginExternal(Plugin* pPlugin)
 {
 	//BUGBUG нужны проверки на легальность выгрузки
-	if(pPlugin->Active())
+	if (pPlugin->Active())
 	{
 		if(!IsPluginUnloaded(pPlugin))
 		{
-			UnloadedPlugins.emplace_back(pPlugin);
+			UnloadedPlugins.emplace(pPlugin);
 		}
 		return true;
 	}
 
-	UnloadedPlugins.remove(pPlugin);
+	UnloadedPlugins.erase(pPlugin);
 	const auto Result = pPlugin->Unload(true);
 	RemovePlugin(pPlugin);
 	return Result;
@@ -352,7 +360,7 @@ bool PluginManager::UnloadPluginExternal(Plugin* pPlugin)
 
 Plugin* PluginManager::FindPlugin(const string_view ModuleName) const
 {
-	const auto ItemIterator = std::find_if(CONST_RANGE(SortedPlugins, i)
+	const auto ItemIterator = std::ranges::find_if(SortedPlugins, [&](Plugin const* const i)
 	{
 		return equal_icase(i->ModuleName(), ModuleName);
 	});
@@ -378,7 +386,7 @@ void PluginManager::LoadFactories()
 		{
 			if (auto CustomModel = CreateCustomPluginFactory(this, filename))
 			{
-				if (std::find_if(ALL_CONST_RANGE(PluginFactories), [&](const auto& i){ return i->Id() == CustomModel->Id(); }) == PluginFactories.cend())
+				if (std::ranges::find(PluginFactories, CustomModel->Id(), &plugin_factory::Id) == PluginFactories.cend())
 					PluginFactories.emplace_back(std::move(CustomModel));
 			}
 		}
@@ -472,7 +480,7 @@ void PluginManager::LoadPluginsFromCache()
 
 	for (size_t i = 0; ConfigProvider().PlCacheCfg()->EnumPlugins(i, strModuleName); ++i)
 	{
-		ReplaceSlashToBackslash(strModuleName);
+		path::inplace::normalize_separators(strModuleName);
 
 		os::fs::find_data FindData;
 
@@ -557,7 +565,12 @@ std::unique_ptr<plugin_panel> PluginManager::OpenFilePlugin(const string* Name, 
 		Name = &strFullName;
 	}
 
-	const auto ShowMenu = Global->Opt->PluginConfirm.OpenFilePlugin==BSTATE_3STATE? !(Type == OFP_NORMAL || Type == OFP_SEARCH) : Global->Opt->PluginConfirm.OpenFilePlugin != 0;
+	const auto ShowMenu =
+		Type != OFP_SEARCH && // UI is not thread-safe
+		(
+			Global->Opt->PluginConfirm.OpenFilePlugin == BSTATE_CHECKED ||
+			(Global->Opt->PluginConfirm.OpenFilePlugin == BSTATE_3STATE && Type != OFP_NORMAL)
+		);
 
 	 //у анси плагинов OpMode нет.
 	if(Type==OFP_ALTERNATIVE) OpMode|=OPM_PGDN;
@@ -579,14 +592,14 @@ std::unique_ptr<plugin_panel> PluginManager::OpenFilePlugin(const string* Name, 
 			os::fs::file const File(*Name, FILE_READ_DATA, os::fs::file_share_all, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN);
 			if (!File)
 			{
-				LOGWARNING(L"create_file({}): {}"sv, *Name, last_error());
+				LOGERROR(L"create_file({}): {}"sv, *Name, os::last_error());
 				return nullptr;
 			}
 
 			size_t DataSize = 0;
 			if (!File.Read(Buffer.data(), Buffer.size(), DataSize))
 			{
-				LOGWARNING(L"read_file({}): {}"sv, *Name, last_error());
+				LOGERROR(L"read_file({}): {}"sv, *Name, os::last_error());
 				return nullptr;
 			}
 
@@ -691,7 +704,7 @@ std::unique_ptr<plugin_panel> PluginManager::OpenFilePlugin(const string* Name, 
 		OpenInfo oInfo{ sizeof(oInfo) };
 		oInfo.OpenFrom = OPEN_ANALYSE;
 		oInfo.Guid = &FarUuid;
-		oInfo.Data = reinterpret_cast<intptr_t>(&oainfo);
+		oInfo.Data = std::bit_cast<intptr_t>(&oainfo);
 
 		// If we have reached this point, the analyse handle will be passed to the plugin
 		// and supposed to be deleted by it, so we should not call CloseAnalyse.
@@ -716,7 +729,7 @@ std::unique_ptr<plugin_panel> PluginManager::OpenFilePlugin(const string* Name, 
 	return std::make_unique<plugin_panel>(std::move(*PluginIterator));
 }
 
-std::unique_ptr<plugin_panel> PluginManager::OpenFindListPlugin(span<const PluginPanelItem> const PanelItems) const
+std::unique_ptr<plugin_panel> PluginManager::OpenFindListPlugin(std::span<const PluginPanelItem> const PanelItems) const
 {
 	class plugin_panel_holder: public plugin_panel
 	{
@@ -871,7 +884,7 @@ intptr_t PluginManager::ProcessSubscribedEditorEvent(int Event, void *Param, con
 
 		for (const auto& i: SortedPlugins)
 		{
-			if (!i->has(iProcessEditorEvent) || !contains(PluginIds, i->Id()))
+			if (!i->has(iProcessEditorEvent) || !PluginIds.contains(i->Id()))
 				continue;
 
 			// The return value is currently ignored
@@ -902,6 +915,21 @@ intptr_t PluginManager::ProcessViewerEvent(int Event, void *Param, const Viewer*
 			// The return value is currently ignored
 			i->ProcessViewerEvent(&Info);
 		}
+	}
+
+	return 0;
+}
+
+intptr_t PluginManager::ProcessSynchroEvent(intptr_t Event, void* Param) const
+{
+	ProcessSynchroEventInfo Info{ sizeof(Info) };
+	Info.Event = Event;
+	Info.Param = Param;
+
+	const auto LuaMacro = FindPlugin(Global->Opt->KnownIDs.Luamacro.Id);
+	if (LuaMacro && !LuaMacro->IsPendingRemove() && LuaMacro->has(iProcessSynchroEvent))
+	{
+		LuaMacro->ProcessSynchroEvent(&Info);
 	}
 
 	return 0;
@@ -951,7 +979,7 @@ intptr_t PluginManager::ProcessConsoleInput(ProcessConsoleInputInfo *Info) const
 }
 
 
-intptr_t PluginManager::GetFindData(const plugin_panel* hPlugin, span<PluginPanelItem>& PanelItems, int OpMode)
+intptr_t PluginManager::GetFindData(const plugin_panel* hPlugin, std::span<PluginPanelItem>& PanelItems, int OpMode)
 {
 	GetFindDataInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -963,7 +991,7 @@ intptr_t PluginManager::GetFindData(const plugin_panel* hPlugin, span<PluginPane
 }
 
 
-void PluginManager::FreeFindData(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems, bool FreeUserData)
+void PluginManager::FreeFindData(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems, bool FreeUserData)
 {
 	if (FreeUserData)
 	{
@@ -981,7 +1009,7 @@ void PluginManager::FreeFindData(const plugin_panel* hPlugin, span<PluginPanelIt
 }
 
 
-intptr_t PluginManager::GetVirtualFindData(const plugin_panel* hPlugin, span<PluginPanelItem>& PanelItems, const string& Path)
+intptr_t PluginManager::GetVirtualFindData(const plugin_panel* hPlugin, std::span<PluginPanelItem>& PanelItems, const string& Path)
 {
 	GetVirtualFindDataInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -993,7 +1021,7 @@ intptr_t PluginManager::GetVirtualFindData(const plugin_panel* hPlugin, span<Plu
 }
 
 
-void PluginManager::FreeVirtualFindData(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems)
+void PluginManager::FreeVirtualFindData(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems)
 {
 	FreeFindDataInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -1033,11 +1061,11 @@ bool PluginManager::GetFile(const plugin_panel* hPlugin, PluginPanelItem *PanelI
 	const auto GetCode = hPlugin->plugin()->GetFiles(&Info);
 
 	const auto Find = os::fs::enum_files(path::join(Info.DestPath, L'*'));
-	const auto ItemIterator = std::find_if(CONST_RANGE(Find, i) { return !(i.Attributes & FILE_ATTRIBUTE_DIRECTORY); });
+	const auto ItemIterator = std::ranges::find_if(Find, [](os::fs::find_data const& i){ return os::fs::is_file(i); });
 	if (ItemIterator != Find.cend())
 	{
 		const string_view Name = PanelItem->FileName;
-		const auto isADS = GetCode == 1 && starts_with(Name, ItemIterator->FileName) && starts_with(Name.substr(ItemIterator->FileName.size()), L':');
+		const auto isADS = GetCode == 1 && Name.starts_with(ItemIterator->FileName) && Name.substr(ItemIterator->FileName.size()).starts_with(L':');
 		auto Result = path::join(Info.DestPath, isADS? Name : ItemIterator->FileName);
 
 		if (GetCode == 1)
@@ -1049,12 +1077,12 @@ bool PluginManager::GetFile(const plugin_panel* hPlugin, PluginPanelItem *PanelI
 		{
 			if (!os::fs::set_file_attributes(Result, FILE_ATTRIBUTE_NORMAL)) // BUGBUG
 			{
-				LOGWARNING(L"set_file_attributes({}): {}"sv, Result, last_error());
+				LOGWARNING(L"set_file_attributes({}): {}"sv, Result, os::last_error());
 			}
 
 			if (!os::fs::delete_file(Result)) //BUGBUG
 			{
-				LOGWARNING(L"delete_file({}): {}"sv, Result, last_error());
+				LOGWARNING(L"delete_file({}): {}"sv, Result, os::last_error());
 			}
 		}
 	}
@@ -1063,7 +1091,7 @@ bool PluginManager::GetFile(const plugin_panel* hPlugin, PluginPanelItem *PanelI
 }
 
 
-intptr_t PluginManager::DeleteFiles(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems, int OpMode)
+intptr_t PluginManager::DeleteFiles(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems, int OpMode)
 {
 	DeleteFilesInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -1088,7 +1116,7 @@ intptr_t PluginManager::MakeDirectory(const plugin_panel* hPlugin, const wchar_t
 }
 
 
-intptr_t PluginManager::ProcessHostFile(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems, int OpMode)
+intptr_t PluginManager::ProcessHostFile(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems, int OpMode)
 {
 	ProcessHostFileInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -1100,7 +1128,7 @@ intptr_t PluginManager::ProcessHostFile(const plugin_panel* hPlugin, span<Plugin
 }
 
 
-intptr_t PluginManager::GetFiles(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems, bool Move, const wchar_t **DestPath, int OpMode)
+intptr_t PluginManager::GetFiles(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems, bool Move, const wchar_t **DestPath, int OpMode)
 {
 	GetFilesInfo Info{ sizeof(Info) };
 	Info.hPanel = hPlugin->panel();
@@ -1116,7 +1144,7 @@ intptr_t PluginManager::GetFiles(const plugin_panel* hPlugin, span<PluginPanelIt
 }
 
 
-intptr_t PluginManager::PutFiles(const plugin_panel* hPlugin, span<PluginPanelItem> const PanelItems, bool Move, int OpMode)
+intptr_t PluginManager::PutFiles(const plugin_panel* hPlugin, std::span<PluginPanelItem> const PanelItems, bool Move, int OpMode)
 {
 	static string strCurrentDirectory;
 	strCurrentDirectory = os::fs::get_current_directory();
@@ -1367,14 +1395,14 @@ void PluginManager::Configure(int StartPos) const
 	}
 }
 
-int PluginManager::CommandsMenu(int ModalType,int StartPos,const wchar_t *HistoryName) const
+bool PluginManager::CommandsMenu(int ModalType,int StartPos,const wchar_t *HistoryName) const
 {
 	if (ModalType == windowtype_dialog || ModalType == windowtype_menu)
 	{
 		const auto dlg = std::static_pointer_cast<Dialog>(Global->WindowManager->GetCurrentWindow());
 		if (dlg->CheckDialogMode(DMODE_NOPLUGINS) || dlg->GetId()==PluginsMenuId)
 		{
-			return 0;
+			return false;
 		}
 	}
 
@@ -1546,14 +1574,13 @@ int PluginManager::CommandsMenu(int ModalType,int StartPos,const wchar_t *Histor
 
 		if (ExitCode<0)
 		{
-			return FALSE;
+			return false;
 		}
 
 		Global->ScrBuf->Flush();
 		item = *PluginList->GetComplexUserDataPtr<PluginMenuItemData>(ExitCode);
 	}
 
-	const auto ActivePanel = Global->CtrlObject->Cp()->ActivePanel();
 	int OpenCode=OPEN_PLUGINSMENU;
 	intptr_t Item=0;
 	OpenDlgPluginData pd{ sizeof(pd) };
@@ -1570,23 +1597,15 @@ int PluginManager::CommandsMenu(int ModalType,int StartPos,const wchar_t *Histor
 	{
 		OpenCode=OPEN_DIALOG;
 		pd.hDlg = static_cast<HANDLE>(Global->WindowManager->GetCurrentWindow().get());
-		Item = reinterpret_cast<intptr_t>(&pd);
+		Item = std::bit_cast<intptr_t>(&pd);
 	}
 
 	auto hPlugin = Open(item.pPlugin, OpenCode, item.Uuid, Item);
 
 	if (hPlugin && !Editor && !Viewer && !Dialog)
 	{
-		if (ActivePanel->ProcessPluginEvent(FE_CLOSE,nullptr))
-		{
-			ClosePanel(std::move(hPlugin));
-			return FALSE;
-		}
-
-		const auto NewPanel = Global->CtrlObject->Cp()->ChangePanel(ActivePanel, panel_type::FILE_PANEL, TRUE, TRUE);
-		NewPanel->SetPluginMode(std::move(hPlugin), {}, true);
-		NewPanel->Update(0);
-		NewPanel->Show();
+		if (!ProcessPluginPanel(std::move(hPlugin), true))
+			return false;
 	}
 
 	// restore title for old plugins only.
@@ -1599,7 +1618,49 @@ int PluginManager::CommandsMenu(int ModalType,int StartPos,const wchar_t *Histor
 		}
 	}
 #endif // NO_WRAPPER
-	return TRUE;
+	return true;
+}
+//
+bool PluginManager::ProcessPluginPanel(std::unique_ptr<plugin_panel>&& hNewPlugin, const bool fe_close) const
+{
+	bool plugin_panel_stack = false;
+	string hostfile;
+	const auto ActivePanel = Global->CtrlObject->Cp()->ActivePanel();
+	const auto FList = dynamic_cast<FileList*>(ActivePanel.get());
+	//
+	if (FList)
+	{
+		if (ActivePanel->GetMode() == panel_mode::PLUGIN_PANEL)
+		{
+			OpenPanelInfo info = { sizeof(info), hNewPlugin->panel() };
+			hNewPlugin->plugin()->GetOpenPanelInfo(&info);
+			if ((info.Flags & OPIF_RECURSIVEPANEL) && info.HostFile && info.HostFile[0])
+			{
+				hostfile = info.HostFile;
+				plugin_panel_stack = true;
+			}
+		}
+	}
+
+	if (plugin_panel_stack)
+	{
+		FList->PushFilePlugin(hostfile, std::move(hNewPlugin));
+	}
+	else
+	{
+		if (fe_close && ActivePanel->ProcessPluginEvent(FE_CLOSE, nullptr))
+		{
+			ClosePanel(std::move(hNewPlugin));
+			return false;
+		}
+
+		const auto NewPanel = Global->CtrlObject->Cp()->ChangePanel(ActivePanel, panel_type::FILE_PANEL, TRUE, TRUE);
+		NewPanel->SetPluginMode(std::move(hNewPlugin), {}, true);
+		NewPanel->Update(0);
+		NewPanel->Show();
+	}
+
+	return true;
 }
 
 bool PluginManager::SetHotKeyDialog(const Plugin* const pPlugin, const UUID& Uuid, const hotkey_type HotKeyType, const string_view DlgPluginTitle)
@@ -1702,7 +1763,7 @@ static wchar_t* StrToBuf(const string_view Str, char*& Buf, size_t& Rest, size_t
 	if (!BufPtr)
 		return {};
 
-	const auto StrPtr = edit_as<wchar_t*>(BufPtr);
+	const auto StrPtr = std::bit_cast<wchar_t*>(BufPtr);
 	*copy_string(Str, StrPtr) = {};
 	return StrPtr;
 }
@@ -1716,27 +1777,33 @@ static void ItemsToBuf(PluginMenuItem& Menu, const std::vector<string>& NamesArr
 
 	if (Menu.Count)
 	{
-		const auto Items = edit_as<wchar_t**>(BufReserve(Buf, Menu.Count * sizeof(wchar_t*), alignof(wchar_t*), Rest, Size));
-		assert(is_aligned(Items));
-		assert(is_aligned(*Items));
-		Menu.Strings = Items;
-
-		const auto Uuids = edit_as<UUID*>(BufReserve(Buf, Menu.Count * sizeof(UUID), alignof(UUID), Rest, Size));
-		assert(is_aligned(Uuids));
-		assert(is_aligned(*Uuids));
-		Menu.Guids = Uuids;
-
-		for (const auto& [FromName, FromUuid, ToName, ToUuid]: zip(NamesArray, UuidsArray, span(Items, Menu.Count), span(Uuids, Menu.Count)))
+		const auto Items = std::bit_cast<wchar_t**>(BufReserve(Buf, Menu.Count * sizeof(wchar_t*), alignof(wchar_t*), Rest, Size));
+		if (Items)
 		{
-			wchar_t* pStr = StrToBuf(FromName, Buf, Rest, Size);
+			assert(is_aligned(Items));
+			assert(is_aligned(*Items));
+			Menu.Strings = Items;
+		}
+
+		const auto Uuids = std::bit_cast<UUID*>(BufReserve(Buf, Menu.Count * sizeof(UUID), alignof(UUID), Rest, Size));
+		if (Uuids)
+		{
+			assert(is_aligned(Uuids));
+			assert(is_aligned(*Uuids));
+			Menu.Guids = Uuids;
+		}
+
+		for (const auto i: std::views::iota(0uz, Menu.Count))
+		{
+			const auto Str = StrToBuf(NamesArray[i], Buf, Rest, Size);
 			if (Items)
 			{
-				ToName = pStr;
+				Items[i] = Str;
 			}
 
 			if (Uuids)
 			{
-				ToUuid = FromUuid;
+				Uuids[i] = UuidsArray[i];
 			}
 		}
 	}
@@ -1783,7 +1850,7 @@ size_t PluginManager::GetPluginInformation(Plugin* pPlugin, FarGetPluginInformat
 
 			const auto CopyData = [](const PluginMenuItem& Item, menu_items& Items)
 			{
-				for (const auto& [Str, Guid]: zip(span(Item.Strings, Item.Count), span(Item.Guids, Item.Count)))
+				for (const auto& [Str, Guid]: zip(std::span(Item.Strings, Item.Count), std::span(Item.Guids, Item.Count)))
 				{
 					Items.first.emplace_back(Str);
 					Items.second.emplace_back(Guid);
@@ -1820,6 +1887,9 @@ size_t PluginManager::GetPluginInformation(Plugin* pPlugin, FarGetPluginInformat
 
 	pInfo->PInfo = edit_as<PluginInfo*>(pInfo, offsetof(layout, PInfo));
 	pInfo->GInfo = edit_as<GlobalInfo*>(pInfo, offsetof(layout, GInfo));
+
+	*pInfo->PInfo = {};
+	*pInfo->GInfo = {};
 
 	pInfo->ModuleName = StrToBuf(pPlugin->ModuleName(), Buffer, Rest, RequiredSize);
 
@@ -1974,7 +2044,7 @@ bool PluginManager::ProcessCommandLine(const string_view Command)
 			continue;
 
 		const auto Enumerator = enum_tokens(PluginPrefixes, L":"sv);
-		if (!std::any_of(ALL_CONST_RANGE(Enumerator), [&](const auto& p) { return equal_icase(p, *Prefix); }))
+		if (!std::ranges::any_of(Enumerator, [&](const auto& p) { return equal_icase(p, *Prefix); }))
 			continue;
 
 		if (!i->Load() || !i->has(iOpen))
@@ -1987,9 +2057,6 @@ bool PluginManager::ProcessCommandLine(const string_view Command)
 	}
 
 	if (items.empty())
-		return false;
-
-	if (Global->CtrlObject->Cp()->ActivePanel()->ProcessPluginEvent(FE_CLOSE,nullptr))
 		return false;
 
 	auto PluginIterator = items.cbegin();
@@ -2008,8 +2075,9 @@ bool PluginManager::ProcessCommandLine(const string_view Command)
 
 		const auto ExitCode = Menu->Run();
 
+		// No point in giving the command to the OS if the user cancelled the operation
 		if (ExitCode < 0)
-			return false;
+			return true;
 
 		PluginIterator += ExitCode;
 	}
@@ -2017,12 +2085,9 @@ bool PluginManager::ProcessCommandLine(const string_view Command)
 	// Copy instead of string_view as it goes into the wild
 	const string PluginCommand(Command.substr(PluginIterator->PluginFlags & PF_FULLCMDLINE? 0 : Prefix->size() + 1));
 	const OpenCommandLineInfo info{ sizeof(OpenCommandLineInfo), PluginCommand.c_str() };
-	if (auto hPlugin = Global->CtrlObject->Plugins->Open(PluginIterator->pPlugin, OPEN_COMMANDLINE, FarUuid, reinterpret_cast<intptr_t>(&info)))
+	if (auto hPlugin = Global->CtrlObject->Plugins->Open(PluginIterator->pPlugin, OPEN_COMMANDLINE, FarUuid, std::bit_cast<intptr_t>(&info)))
 	{
-		const auto NewPanel = Global->CtrlObject->Cp()->ChangePanel(Global->CtrlObject->Cp()->ActivePanel(), panel_type::FILE_PANEL, TRUE, TRUE);
-		NewPanel->SetPluginMode(std::move(hPlugin), {}, true);
-		NewPanel->Update(0);
-		NewPanel->Show();
+		ProcessPluginPanel(std::move(hPlugin), true);
 	}
 	return true;
 }
@@ -2047,7 +2112,7 @@ bool PluginManager::CallPlugin(const UUID& SysID,int OpenFrom, void *Data,void *
 	if (exception_handling_in_progress() || !pPlugin || !pPlugin->has(iOpen))
 		return false;
 
-	auto PluginPanel = Open(pPlugin, OpenFrom, FarUuid, reinterpret_cast<intptr_t>(Data));
+	auto PluginPanel = Open(pPlugin, OpenFrom, FarUuid, std::bit_cast<intptr_t>(Data));
 	bool process=false;
 
 	if (OpenFrom == OPEN_FROMMACRO)
@@ -2219,7 +2284,7 @@ bool PluginManager::CallPluginItem(const UUID& Uuid, CallPluginInfo *Data) const
 			}
 			else
 			{
-				if (contains(span(MenuItems->Guids, MenuItems->Count), *Data->ItemUuid))
+				if (contains(std::span(MenuItems->Guids, MenuItems->Count), *Data->ItemUuid))
 				{
 					Data->FoundUuid = *Data->ItemUuid;
 					Data->ItemUuid = &Data->FoundUuid;
@@ -2237,13 +2302,11 @@ bool PluginManager::CallPluginItem(const UUID& Uuid, CallPluginInfo *Data) const
 		return false;
 
 	std::unique_ptr<plugin_panel> hPlugin;
-	panel_ptr ActivePanel;
 
 	switch (Data->CallFlags & CPT_MASK)
 	{
 	case CPT_MENU:
 		{
-			ActivePanel = Global->CtrlObject->Cp()->ActivePanel();
 			auto OpenCode = OPEN_PLUGINSMENU;
 			intptr_t Item = 0;
 			OpenDlgPluginData pd { sizeof(pd) };
@@ -2260,7 +2323,7 @@ bool PluginManager::CallPluginItem(const UUID& Uuid, CallPluginInfo *Data) const
 			{
 				OpenCode = OPEN_DIALOG;
 				pd.hDlg = static_cast<HANDLE>(Global->WindowManager->GetCurrentWindow().get());
-				Item = reinterpret_cast<intptr_t>(&pd);
+				Item = std::bit_cast<intptr_t>(&pd);
 			}
 
 			hPlugin=Open(Data->pPlugin,OpenCode,Data->FoundUuid,Item);
@@ -2274,10 +2337,9 @@ bool PluginManager::CallPluginItem(const UUID& Uuid, CallPluginInfo *Data) const
 
 	case CPT_CMDLINE:
 		{
-			ActivePanel=Global->CtrlObject->Cp()->ActivePanel();
 			const string command = Data->Command; // Нужна копия строки
 			OpenCommandLineInfo info{ sizeof(OpenCommandLineInfo), command.c_str() };
-			hPlugin = Open(Data->pPlugin, OPEN_COMMANDLINE, FarUuid, reinterpret_cast<intptr_t>(&info));
+			hPlugin = Open(Data->pPlugin, OPEN_COMMANDLINE, FarUuid, std::bit_cast<intptr_t>(&info));
 			Result = true;
 		}
 		break;
@@ -2293,18 +2355,11 @@ bool PluginManager::CallPluginItem(const UUID& Uuid, CallPluginInfo *Data) const
 
 	if (hPlugin && !Editor && !Viewer && !Dialog)
 	{
+		if (!ProcessPluginPanel(std::move(hPlugin), true))
+			return false;
+
 		//BUGBUG: Закрытие панели? Нужно ли оно?
 		//BUGBUG: В ProcessCommandLine зовется перед Open, а в CPT_MENU - после
-		if (ActivePanel->ProcessPluginEvent(FE_CLOSE, nullptr))
-		{
-			ClosePanel(std::move(hPlugin));
-			return false;
-		}
-
-		const auto NewPanel = Global->CtrlObject->Cp()->ChangePanel(ActivePanel, panel_type::FILE_PANEL, TRUE, TRUE);
-		NewPanel->SetPluginMode(std::move(hPlugin), {}, true);
-		NewPanel->Update(0);
-		NewPanel->Show();
 	}
 
 	// restore title for old plugins only.
@@ -2345,7 +2400,7 @@ std::vector<Plugin*> PluginManager::GetContentPlugins(const std::vector<const wc
 {
 	GetContentFieldsInfo Info{ sizeof(Info), ColNames.size(), ColNames.data() };
 	std::vector<Plugin*> Plugins;
-	std::copy_if(ALL_CONST_RANGE(SortedPlugins), std::back_inserter(Plugins), [&Info](Plugin* p)
+	std::ranges::copy_if(SortedPlugins, std::back_inserter(Plugins), [&Info](Plugin* p)
 	{
 		return p->has(iGetContentData) && p->has(iGetContentFields) && p->GetContentFields(&Info);
 	});
@@ -2360,7 +2415,7 @@ void PluginManager::GetContentData(
 	unordered_string_map<string>& ContentData
 ) const
 {
-	const NTPath Path(FilePath);
+	const auto Path = nt_path(FilePath);
 	const auto Count = ColNames.size();
 
 	for (const auto& i: Plugins)
@@ -2371,7 +2426,7 @@ void PluginManager::GetContentData(
 		if (!i->GetContentData(&GetInfo) || !GetInfo.Values)
 			continue;
 
-		for (const auto& [ColName, Value]: zip(ColNames, span(GetInfo.Values, Count)))
+		for (const auto& [ColName, Value]: zip(ColNames, std::span(GetInfo.Values, Count)))
 		{
 			if (Value)
 				ContentData[ColName] += Value;
@@ -2391,26 +2446,21 @@ const UUID& PluginManager::GetUUID(const plugin_panel* hPlugin)
 
 void PluginManager::RefreshPluginsList()
 {
-	if(!UnloadedPlugins.empty())
+	// It is probably not that important in which exactly order we unload them
+	std::erase_if(UnloadedPlugins, [this](const auto& i)
 	{
-		UnloadedPlugins.remove_if([this](const auto& i)
-		{
-			if (!i->Active())
-			{
-				i->Unload(true);
-				RemovePlugin(i);
-				return true;
-			}
+		if (i->Active())
 			return false;
-		});
-	}
+
+		i->Unload(true);
+		RemovePlugin(i);
+		return true;
+	});
 }
 
-void PluginManager::UndoRemove(const Plugin* plugin)
+void PluginManager::UndoRemove(Plugin* plugin)
 {
-	const auto i = std::find(UnloadedPlugins.begin(), UnloadedPlugins.end(), plugin);
-	if(i != UnloadedPlugins.end())
-		UnloadedPlugins.erase(i);
+	UnloadedPlugins.erase(plugin);
 }
 
 bool PluginManager::GetPluginInfo(Plugin* pPlugin, PluginInfo* Info)

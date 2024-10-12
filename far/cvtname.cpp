@@ -100,7 +100,7 @@ static void MixToFullPath(string& strPath)
 			if (Pos + 2 == strPath.size() || path::is_separator(strPath[Pos + 2]))
 			{
 				//Calculate subdir name offset
-				size_t n = strPath.find_last_of(L"\\/"sv, Pos-2);
+				size_t n = strPath.find_last_of(path::separators, Pos-2);
 				n = (n == string::npos || n < DirOffset) ? DirOffset : n+1;
 
 				//fragment "..\" or "../"
@@ -185,7 +185,6 @@ static void MixToFullPath(const string_view stPath, string& Dest, const string_v
 	case root_type::win32nt_drive_letter: //"\\?\whatever"
 	case root_type::unc_remote:
 	case root_type::volume:
-	case root_type::pipe:
 	case root_type::unknown_rootlike:
 		blIgnore=true;
 		PathOffset = 0;
@@ -235,7 +234,7 @@ std::optional<wchar_t> get_volume_drive(string_view const VolumePath)
 	string VolumeName;
 	const os::fs::enum_drives Enumerator(os::fs::get_logical_drives());
 
-	const auto ItemIterator = std::find_if(ALL_CONST_RANGE(Enumerator), [&](const wchar_t i)
+	const auto ItemIterator = std::ranges::find_if(Enumerator, [&](const wchar_t i)
 	{
 		return os::fs::GetVolumeNameForVolumeMountPoint(os::fs::drive::get_win32nt_root_directory(i), VolumeName) && equal_icase(VolumeName, SrcVolumeName);
 	});
@@ -272,7 +271,6 @@ string ConvertNameToReal(string_view const Object)
 
 	// Получим сначала полный путь до объекта обычным способом
 	const auto FullPath = ConvertNameToFull(Object);
-	auto strDest = FullPath;
 
 	string Path = FullPath;
 	os::fs::file File;
@@ -286,14 +284,14 @@ string ConvertNameToReal(string_view const Object)
 	}
 
 	if (!File)
-		return strDest;
+		return FullPath;
 
 	string FinalFilePath;
 	const auto Result = File.GetFinalPathName(FinalFilePath);
 	File.Close();
 
 	if (!Result || FinalFilePath.empty())
-		return strDest;
+		return FullPath;
 
 	// append non-existent path part (if present)
 	DeleteEndSlash(Path);
@@ -310,7 +308,7 @@ string ConvertNameToReal(string_view const Object)
 	if (PathPrefix.size() == 8) // \\?\UNC\...
 	{
 		// network -> network
-		if (starts_with(FinalFilePath, L"\\\\"sv))
+		if (FinalFilePath.starts_with(L"\\\\"sv))
 			return PathPrefix + string_view(FinalFilePath).substr(2);
 
 		// network -> local
@@ -318,7 +316,7 @@ string ConvertNameToReal(string_view const Object)
 	}
 
 	// local -> network
-	if (starts_with(FinalFilePath, L"\\\\"sv))
+	if (FinalFilePath.starts_with(L"\\\\"sv))
 		return L"\\\\?\\UNC\\"sv + string_view(FinalFilePath).substr(2);
 
 	// local -> local
@@ -334,7 +332,7 @@ static string ConvertName(string_view const Object, bool(*Mutator)(string_view, 
 
 	strDest = Object;
 
-	if (HasPathPrefix(Object) || !Mutator(NTPath(Object), strDest))
+	if (HasPathPrefix(Object) || !Mutator(nt_path(Object), strDest))
 		return string(Object);
 
 	switch (ParsePath(strDest))
@@ -376,14 +374,13 @@ string ConvertNameToUNC(string_view const Object)
 		// BugZ#449 - Неверная работа CtrlAltF с ресурсами Novell DS
 		// Здесь, если не получилось получить UniversalName и если это
 		// мапленный диск - получаем как для меню выбора дисков
-		string strTemp;
-		if (DriveLocalToRemoteName(true, strFileName, strTemp))
+		if (string strTemp; DriveLocalToRemoteName(true, strFileName, strTemp))
 		{
 			const auto SlashPos = FindSlash(strFileName);
 			if (SlashPos != string::npos)
 				path::append(strTemp, string_view(strFileName).substr(SlashPos + 1));
 
-			strFileName = strTemp;
+			strFileName = std::move(strTemp);
 		}
 	}
 	else
@@ -417,7 +414,7 @@ void PrepareDiskPath(string &strPath, bool CheckFullPath)
 	// elevation not required during cosmetic operation
 	SCOPED_ACTION(elevation::suppress);
 
-	ReplaceSlashToBackslash(strPath);
+	path::inplace::normalize_separators(strPath);
 	const auto DoubleSlash = strPath[1] == L'\\';
 	remove_duplicates(strPath, L'\\');
 	if(DoubleSlash)
