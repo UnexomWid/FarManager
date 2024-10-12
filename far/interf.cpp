@@ -717,7 +717,7 @@ void ShowGreeting()
 		{
 			msg = L"Good afternoon, ";
 		}
-		else if(clock.tm_hour >= 17 && clock.tm_hour < 20)
+		else if (clock.tm_hour >= 17 && clock.tm_hour < 20)
 		{
 			msg = L"Good evening, ";
 		}
@@ -746,17 +746,16 @@ void ShowGreeting()
 
 		msg += L"~";
 
-		auto CurrentGreetingPos = (int)(ScrY - 1 - Global->Opt->ShowKeyBar - Global->Opt->LeftHeightDecrement);
-		int x = 1;
+		const auto CurrentGreetingPos = ScrX + 1 - static_cast<int>(Global->LastShownTimeSize);
 
 		if (msg.size() < Global->LastShownGreetingSize)
 		{
 			matrix<FAR_CHAR_INFO> Char(1, 1);
-			Global->ScrBuf->Read({ x, CurrentGreetingPos - 1, x, CurrentGreetingPos - 1 }, Char);
-			Global->ScrBuf->FillRect({ x, CurrentGreetingPos, CurrentGreetingPos + static_cast<int>(Global->LastShownGreetingSize), CurrentGreetingPos }, Char[0][0]);
+			Global->ScrBuf->Read({ CurrentGreetingPos - 1, 0, CurrentGreetingPos - 1, 0 }, Char);
+			Global->ScrBuf->FillRect({ CurrentGreetingPos, 0, CurrentGreetingPos + static_cast<int>(Global->LastShownGreetingSize), 0 }, Char[0][0]);
 		}
 
-		GotoXY(x, static_cast<int>(CurrentGreetingPos));
+		GotoXY(static_cast<int>(ScrX + 1 - msg.size()), 0);
 		SetColor(COL_CLOCK);
 		Text(msg);
 		Global->LastShownGreetingSize = msg.size();
